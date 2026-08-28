@@ -1,6 +1,6 @@
 import json
 import uuid
-import mysql.connector
+import importlib
 from datetime import datetime
 
 def load_json(filepath):
@@ -175,10 +175,11 @@ def run_etl():
     # load data
     print("Connecting to MySQL Database...")
     try:
-        conn = mysql.connector.connect(
+        mysql_connector = importlib.import_module('mysql.connector')
+        conn = mysql_connector.connect(
             host="localhost",
-            user="etl", 
-            password="etlv1", 
+            user="root",
+            password="",
             database="cricket_explorer"
         )
         cursor = conn.cursor()
@@ -247,7 +248,9 @@ def run_etl():
         conn.commit()
         print("ETL pipeline completed successfully! Data inserted into MySQL.")
 
-    except mysql.connector.Error as err:
+    except ModuleNotFoundError:
+        print("MySQL Error: mysql-connector-python is not installed.")
+    except Exception as err:
         print(f"MySQL Error: {err}")
     finally:
         if 'conn' in locals() and conn.is_connected():
