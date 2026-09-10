@@ -1,3 +1,4 @@
+
 <?php
 if (isset($_GET['action']) && $_GET['action'] === 'search') {
     header('Content-Type: application/json; charset=utf-8');
@@ -35,8 +36,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
     $connection->set_charset('utf8mb4');
 
     $searchableQueries = [
-        'players' => "SELECT 'Players' AS type, p.player_id AS id, p.player_name AS title, CONCAT('Player ID: ', p.player_id) AS subtitle, JSON_OBJECT('birthDate', p.birth_date, 'nationality', p.nationality, 'team', (SELECT t.team_name FROM PERFORMANCE perf_team INNER JOIN TEAMS t ON t.team_id = perf_team.team_id WHERE perf_team.player_id = p.player_id LIMIT 1), 'matches', COUNT(DISTINCT m.match_id), 'runs', COALESCE(SUM(perf.runs_scored), 0), 'ballsFaced', COALESCE(SUM(perf.balls_faced), 0), 'wickets', COALESCE(SUM(perf.wickets_taken), 0), 'catches', COALESCE(SUM(perf.catches), 0), 'stumpings', COALESCE(SUM(perf.stumpings), 0)) AS details FROM PLAYERS p LEFT JOIN PERFORMANCE perf ON perf.player_id = p.player_id LEFT JOIN INNINGS i ON i.innings_id = perf.innings_id LEFT JOIN MATCHES m ON m.match_id = i.match_id WHERE p.player_name LIKE ? GROUP BY p.player_id, p.player_name, p.birth_date, p.nationality",
-        'teams' => "SELECT 'Teams' AS type, t.team_id AS id, t.team_name AS title, COALESCE(t.home_ground, 'No home ground') AS subtitle, JSON_OBJECT('homeGround', t.home_ground, 'players', COALESCE((SELECT GROUP_CONCAT(DISTINCT p.player_name ORDER BY p.player_name SEPARATOR '||') FROM PERFORMANCE perf INNER JOIN PLAYERS p ON p.player_id = perf.player_id WHERE perf.team_id = t.team_id), '')) AS details FROM TEAMS t WHERE CONCAT_WS(' ', t.team_name, t.home_ground) LIKE ?",
+        'players' => "SELECT 'Players' AS type, p.player_id AS id, p.player_name AS title, CONCAT('Player ID: ', p.player_id) AS subtitle, JSON_OBJECT('birthDate', p.birth_date, 'nationality', p.nationality, 'team', (SELECT t.team_name FROM PERFORMANCE perf_team INNER JOIN TEAMS t ON t.team_id = perf_team.team_id WHERE perf_team.player_id = p.player_id LIMIT 1), 'matches', COUNT(DISTINCT m.match_id), 'runs', COALESCE(SUM(perf.runs_scored), 0), 'ballsFaced', COALESCE(SUM(perf.balls_faced), 0), 'wickets', COALESCE(SUM(perf.wickets_taken), 0), 'runsConceded', COALESCE(SUM(perf.runs_conceded), 0), 'maidens', COALESCE(SUM(perf.maidens), 0), 'catches', COALESCE(SUM(perf.catches), 0), 'stumpings', COALESCE(SUM(perf.stumpings), 0), 'runOuts', COALESCE(SUM(perf.run_outs), 0), 'bestBowling', COALESCE((SELECT CONCAT(best_perf.wickets_taken, '/', best_perf.runs_conceded) FROM PERFORMANCE best_perf WHERE best_perf.player_id = p.player_id ORDER BY best_perf.wickets_taken DESC, best_perf.runs_conceded ASC LIMIT 1), '0/0'), 'bestBatting', COALESCE((SELECT best_perf.runs_scored FROM PERFORMANCE best_perf WHERE best_perf.player_id = p.player_id ORDER BY best_perf.runs_scored DESC LIMIT 1), 0)) AS details FROM PLAYERS p LEFT JOIN PERFORMANCE perf ON perf.player_id = p.player_id LEFT JOIN INNINGS i ON i.innings_id = perf.innings_id LEFT JOIN MATCHES m ON m.match_id = i.match_id WHERE p.player_name LIKE ? GROUP BY p.player_id, p.player_name, p.birth_date, p.nationality",
+        'teams' => "SELECT 'Teams' AS type, t.team_id AS id, t.team_name AS title, COALESCE(t.home_ground, 'No home ground') AS subtitle, JSON_OBJECT('homeGround', t.home_ground, 'players', COALESCE((SELECT GROUP_CONCAT(DISTINCT p.player_name ORDER BY p.player_name SEPARATOR '||') FROM PERFORMANCE perf INNER JOIN PLAYERS p ON p.player_id = perf.player_id WHERE perf.team_id = t.team_id), ''), 'matches', COUNT(DISTINCT m.match_id), 'wins', COUNT(DISTINCT CASE WHEN m.winning_team_id = t.team_id THEN m.match_id END), 'draws', COUNT(DISTINCT CASE WHEN m.match_id IS NOT NULL AND m.winning_team_id IS NULL THEN m.match_id END), 'losses', COUNT(DISTINCT CASE WHEN m.match_id IS NOT NULL AND m.winning_team_id IS NOT NULL AND m.winning_team_id <> t.team_id THEN m.match_id END)) AS details FROM TEAMS t LEFT JOIN MATCHES m ON m.team1_id = t.team_id OR m.team2_id = t.team_id WHERE CONCAT_WS(' ', t.team_name, t.home_ground) LIKE ? GROUP BY t.team_id, t.team_name, t.home_ground",
         'competitions' => "SELECT 'Competitions' AS type, c.comp_id AS id, c.comp_name AS title, CONCAT('Competition ID: ', c.comp_id) AS subtitle, JSON_OBJECT('seasons', COALESCE((SELECT GROUP_CONCAT(s.season_name ORDER BY s.season_name SEPARATOR '||') FROM SEASONS s WHERE s.comp_id = c.comp_id), '')) AS details FROM COMPETITIONS c WHERE c.comp_name LIKE ?",
         'seasons' => "SELECT 'Seasons' AS type, s.season_id AS id, s.season_name AS title, c.comp_name AS subtitle, JSON_OBJECT('competition', c.comp_name, 'matches', COALESCE((SELECT GROUP_CONCAT(CONCAT(m.match_date, ' - ', t1.team_name, ' vs ', t2.team_name) ORDER BY m.match_date SEPARATOR '||') FROM MATCHES m INNER JOIN TEAMS t1 ON t1.team_id = m.team1_id INNER JOIN TEAMS t2 ON t2.team_id = m.team2_id WHERE m.season_id = s.season_id), '')) AS details FROM SEASONS s INNER JOIN COMPETITIONS c ON c.comp_id = s.comp_id WHERE CONCAT_WS(' ', s.season_name, c.comp_name) LIKE ?",
         'matches' => "SELECT 'Matches' AS type, m.match_id AS id, CONCAT(t1.team_name, ' vs ', t2.team_name) AS title, CONCAT(m.match_date, ' | ', COALESCE(m.venue, 'Venue unknown'), ' | ', COALESCE(s.season_name, 'Season unknown')) AS subtitle, JSON_OBJECT('season', s.season_name, 'date', m.match_date, 'venue', m.venue, 'teamA', t1.team_name, 'teamB', t2.team_name, 'winningTeam', winner.team_name, 'winType', m.win_type, 'winMargin', m.win_margin, 'winMethod', m.win_method, 'matchType', m.match_type, 'tossWinner', toss.team_name, 'tossDecision', m.toss_decision) AS details FROM MATCHES m INNER JOIN TEAMS t1 ON t1.team_id = m.team1_id INNER JOIN TEAMS t2 ON t2.team_id = m.team2_id LEFT JOIN TEAMS winner ON winner.team_id = m.winning_team_id LEFT JOIN TEAMS toss ON toss.team_id = m.toss_winner_id LEFT JOIN SEASONS s ON s.season_id = m.season_id WHERE CONCAT_WS(' ', m.match_id, m.match_date, m.venue, t1.team_name, t2.team_name, s.season_name, CONCAT(t1.team_name, ' vs ', t2.team_name)) LIKE ?"
@@ -48,7 +49,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
         $parts[] = $searchableQueries[$typeMap[$type]];
         $parameters[] = '%' . $query . '%';
     }
-    $sql = 'SELECT * FROM (' . implode(' UNION ALL ', $parts) . ') AS search_results ORDER BY title LIMIT 50';
+    $resultLimit = $query === '%' ? 10000 : 50;
+    $sql = 'SELECT * FROM (' . implode(' UNION ALL ', $parts) . ') AS search_results ORDER BY title LIMIT ' . $resultLimit;
     $statement = $connection->prepare($sql);
     if (!$statement) {
         http_response_code(500);
@@ -324,6 +326,73 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             border-color: #cc0000;
             color: #cc0000;
         }
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+        .comparison-table th,
+        .comparison-table td {
+            border: 1px solid #ddd;
+            padding: 10px 12px;
+            text-align: left;
+        }
+        .comparison-table th {
+            background: #f7f7f7;
+        }
+        .comparison-table .comparison-category {
+            background: #eef5fb;
+            color: #16466f;
+            font-weight: 600;
+        }
+        .comparison-remove {
+            margin-left: 8px;
+            border: 1px solid #999;
+            background: white;
+            cursor: pointer;
+        }
+        .comparison-selectors {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .comparison-selector {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .comparison-selector label {
+            font-weight: 600;
+        }
+        .comparison-selector input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 9px 10px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+        }
+        .comparison-selector select {
+            width: 100%;
+            min-height: 150px;
+            padding: 6px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            background: white;
+        }
+        .comparison-table .comparison-better {
+            color: #16803c;
+            font-weight: 600;
+        }
+        .comparison-table .comparison-worse {
+            color: #c62828;
+            font-weight: 600;
+        }
+        @media (max-width: 700px) {
+            .comparison-selectors {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -360,6 +429,22 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                     stats: [
                         { format: '', matches: '', runs: '', average: '', strikeRate: '' }
                     ]
+                }
+            },
+            {
+                id: 'player-comparison',
+                title: 'Player Comparison',
+                description: 'Compare up to two players.',
+                comparison: {
+                    players: []
+                }
+            },
+            {
+                id: 'team-comparison',
+                title: 'Team Comparison',
+                description: 'Compare up to two teams.',
+                comparison: {
+                    teams: []
                 }
             },
             {
@@ -422,6 +507,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 description: 'bookmarks',
                 bookmarks: {
                     players: [],
+                    comparisons: [],
+                    teamComparisons: [],
                     teams: [],
                     competitions: [],
                     seasons: [],
@@ -470,6 +557,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                     const savedElement = savedElements[element.id];
                     if (savedElement && savedElement.player) {
                         element.player = savedElement.player;
+                    } else if (savedElement && savedElement.comparison) {
+                        element.comparison = savedElement.comparison;
                     } else if (savedElement && savedElement.team) {
                         element.team = savedElement.team;
                     } else if (savedElement && savedElement.competition) {
@@ -488,7 +577,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
         function saveElementData() {
             const savedElements = {};
             elements.forEach(element => {
-                ['player', 'team', 'competition', 'season', 'match'].forEach(property => {
+                ['player', 'comparison', 'team', 'competition', 'season', 'match'].forEach(property => {
                     if (element[property]) {
                         savedElements[element.id] = { [property]: element[property] };
                     }
@@ -554,15 +643,29 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             }
             if (element.id === 'player-stats' && element.player) {
                 const player = element.player;
-                const rows = player.stats.map(stat =>
-                    '<tr>' +
-                        '<td>' + stat.format + '</td>' +
-                        '<td>' + stat.matches + '</td>' +
-                        '<td>' + stat.runs + '</td>' +
-                        '<td>' + stat.average + '</td>' +
-                        '<td>' + stat.strikeRate + '</td>' +
-                    '</tr>'
-                ).join('');
+                const comparison = player.comparison;
+                const formatRows = player.stats.map(stat => {
+                    const format = stat.format || 'Batting';
+                    return [
+                        '<tr><th rowspan="4">' + format + '</th><th>Matches</th><td>' + stat.matches + '</td></tr>',
+                        '<tr><th>Runs</th><td>' + stat.runs + '</td></tr>',
+                        '<tr><th>Average</th><td>' + stat.average + '</td></tr>',
+                        '<tr><th>Strike rate</th><td>' + stat.strikeRate + '</td></tr>'
+                    ].join('');
+                }).join('');
+                const comparisonRows = comparison ? [
+                    ['Fielding', 'Catches taken', comparison.catches],
+                    ['', 'Stumpings', comparison.stumpings],
+                    ['', 'Run outs', comparison.runOuts],
+                    ['Bowling', 'Total wickets', comparison.wickets],
+                    ['', 'Bowling average', comparison.bowlingAverage],
+                    ['', 'Maidens', comparison.maidens],
+                    ['', 'Best figures', comparison.bestBowling],
+                    ['Batting', 'Total runs', comparison.runs],
+                    ['', 'Batting average', comparison.battingAverage],
+                    ['', 'Strike rate', comparison.strikeRate],
+                    ['', 'Best figures', comparison.bestBatting]
+                ].map(row => '<tr>' + (row[0] ? '<th class="comparison-category" rowspan="' + (row[0] === 'Fielding' ? 3 : 4) + '">' + row[0] + '</th>' : '') + '<th>' + row[1] + '</th><td>' + row[2] + '</td></tr>').join('') : '';
                 const photo = player.photo
                     ? '<div class="player-photo"><img src="' + player.photo + '" alt="Player photo" /></div>'
                     : '<div class="player-photo">Photo</div>';
@@ -578,25 +681,84 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                             '<p><strong>Batting Style:</strong> ' + player.battingStyle + '</p>' +
                         '</div>' +
                         '<table class="player-stats-table">' +
-                            '<thead><tr><th>Format</th><th>Matches</th><th>Runs</th><th>Average</th><th>Strike Rate</th></tr></thead>' +
-                            '<tbody>' + rows + '</tbody>' +
+                            '<thead><tr><th>Category</th><th>Statistic</th><th>Value</th></tr></thead>' +
+                            '<tbody>' + formatRows + comparisonRows + '</tbody>' +
                         '</table>' +
                     '</div>' +
                 '</div>';
+            }
+            if (element.id === 'player-comparison' && element.comparison) {
+                const slots = [0, 1];
+                const selectedPlayers = element.comparison.players || [];
+                const selectors = slots.map(slot =>
+                    '<div class="comparison-selector"><label for="comparison-player-' + slot + '">Player ' + (slot + 1) + '</label>' +
+                    '<input id="comparison-player-filter-' + slot + '" class="comparison-player-filter" data-slot="' + slot + '" type="search" placeholder="Filter players..." />' +
+                    '<select id="comparison-player-' + slot + '" class="comparison-player-select" data-slot="' + slot + '" size="6"><option value="">Choose a player...</option></select></div>'
+                ).join('');
+                const players = selectedPlayers.filter(Boolean);
+                const selectorMarkup = '<div class="comparison-selectors">' + selectors + '</div>';
+                if (!players.length) {
+                    return selectorMarkup + '<p>Select two players to compare their statistics.</p>';
+                }
+                const playerHeaders = players.map((player, index) =>
+                    '<th>' + escapeHtml(player.name || 'Player ' + (index + 1)) + '</th>'
+                ).join('');
+                const valueCells = (metric, direction) => players.map(player => '<td class="' + comparisonClass(player, metric, direction, players) + '">' + escapeHtml(String(player[metric])) + '</td>').join('');
+                const rows = [
+                    ['Fielding', 'Catches taken', 'catches', 'higher'],
+                    ['', 'Stumpings', 'stumpings', 'higher'],
+                    ['', 'Run outs', 'runOuts', 'higher'],
+                    ['Bowling', 'Total wickets', 'wickets', 'higher'],
+                    ['', 'Bowling average', 'bowlingAverage', 'lower'],
+                    ['', 'Maidens', 'maidens', 'higher'],
+                    ['', 'Best figures', 'bestBowling', 'higher'],
+                    ['Batting', 'Total runs', 'runs', 'higher'],
+                    ['', 'Batting average', 'battingAverage', 'higher'],
+                    ['', 'Strike rate', 'strikeRate', 'higher'],
+                    ['', 'Best figures', 'bestBatting', 'higher']
+                ].map(row => '<tr>' + (row[0] ? '<th class="comparison-category" rowspan="' + (row[0] === 'Fielding' ? 3 : 4) + '">' + row[0] + '</th>' : '') + '<th>' + row[1] + '</th>' + valueCells(row[2], row[3]) + '</tr>').join('');
+                return selectorMarkup + '<table class="comparison-table"><thead><tr><th>Category</th><th>Statistic</th>' + playerHeaders + '</tr></thead><tbody>' + rows + '</tbody></table>';
             }
             if (element.id === 'team' && element.team) {
                 const team = element.team;
                 const players = team.players && team.players.length
                     ? '<ul>' + team.players.map(player => '<li>' + linkMarkup('Players', player) + '</li>').join('') + '</ul>'
                     : '<p>No players available for this team.</p>';
+                const teamMetrics = team.metrics ? '<table class="comparison-table"><thead><tr><th>Statistic</th><th>Value</th></tr></thead><tbody>' +
+                    [['Total matches', team.metrics.matches], ['Wins', team.metrics.wins], ['Losses', team.metrics.losses], ['Draws', team.metrics.draws], ['Win percentage', team.metrics.winPercentage + '%']].map(row => '<tr><th>' + row[0] + '</th><td>' + row[1] + '</td></tr>').join('') +
+                    '</tbody></table>' : '';
                 return '<div>' +
                     '<p><strong>Team Name:</strong> ' + team.name + '</p>' +
                     '<p><strong>Country:</strong> ' + team.country + '</p>' +
                     '<p><strong>Captain:</strong> ' + team.captain + '</p>' +
                     '<p><strong>Home Ground:</strong> ' + team.homeGround + '</p>' +
+                    '<h4>Team Record</h4>' + teamMetrics +
                     '<h4>Players</h4>' +
                     players +
                     '</div>';
+            }
+            if (element.id === 'team-comparison' && element.comparison) {
+                const selectedTeams = element.comparison.teams || [];
+                const selectors = [0, 1].map(slot =>
+                    '<div class="comparison-selector"><label for="comparison-team-' + slot + '">Team ' + (slot + 1) + '</label>' +
+                    '<input id="comparison-team-filter-' + slot + '" class="team-comparison-filter" data-slot="' + slot + '" type="search" placeholder="Filter teams..." />' +
+                    '<select id="comparison-team-' + slot + '" class="team-comparison-select" data-slot="' + slot + '" size="6"><option value="">Choose a team...</option></select></div>'
+                ).join('');
+                const selectorMarkup = '<div class="comparison-selectors">' + selectors + '</div>';
+                const teams = selectedTeams.filter(Boolean);
+                if (!teams.length) {
+                    return selectorMarkup + '<p>Select two teams to compare their records.</p>';
+                }
+                const headers = teams.map(team => '<th>' + escapeHtml(team.name) + '</th>').join('');
+                const cells = metric => teams.map(team => '<td class="' + comparisonClass(team, metric, 'higher', teams) + '">' + escapeHtml(String(team[metric])) + '</td>').join('');
+                const rows = [
+                    ['Total matches', 'matches'],
+                    ['Wins', 'wins'],
+                    ['Losses', 'losses'],
+                    ['Draws', 'draws'],
+                    ['Win percentage', 'winPercentage']
+                ].map(row => '<tr><th>' + row[0] + '</th>' + cells(row[1]) + '</tr>').join('');
+                return selectorMarkup + '<table class="comparison-table"><thead><tr><th>Statistic</th>' + headers + '</tr></thead><tbody>' + rows + '</tbody></table>';
             }
             if (element.id === 'competition' && element.competition) {
                 const competition = element.competition;
@@ -667,9 +829,17 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 const matches = bookmarks.matches && bookmarks.matches.length
                     ? '<ul>' + bookmarks.matches.map(item => bookmarkListItem('Matches', item)).join('') + '</ul>'
                     : '<p>No matches bookmarked.</p>';
+                const comparisons = bookmarks.comparisons && bookmarks.comparisons.length
+                    ? '<ul>' + bookmarks.comparisons.map(item => bookmarkListItem('Player Comparisons', item)).join('') + '</ul>'
+                    : '<p>No player comparisons bookmarked.</p>';
+                const teamComparisons = bookmarks.teamComparisons && bookmarks.teamComparisons.length
+                    ? '<ul>' + bookmarks.teamComparisons.map(item => bookmarkListItem('Team Comparisons', item)).join('') + '</ul>'
+                    : '<p>No team comparisons bookmarked.</p>';
                 return '<div>' +
                     '<h4>Players</h4>' + players +
+                    '<h4>Player Comparisons</h4>' + comparisons +
                     '<h4>Teams</h4>' + teams +
+                    '<h4>Team Comparisons</h4>' + teamComparisons +
                     '<h4>Competitions</h4>' + competitions +
                     '<h4>Seasons</h4>' + seasons +
                     '<h4>Matches</h4>' + matches +
@@ -681,7 +851,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
         function renderStack() {
             stack.innerHTML = '';
             const visible = elements.filter(element => active.has(element.id));
-            const bookmarkable = new Set(['player-stats', 'team', 'competition', 'season-overview', 'match-summary']);
+            const bookmarkable = new Set(['player-stats', 'player-comparison', 'team', 'team-comparison', 'competition', 'season-overview', 'match-summary']);
             visible.forEach(element => {
                 const card = document.createElement('div');
                 card.className = 'stack-item';
@@ -699,9 +869,16 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 }
                 if (element.id === 'bookmarks') {
                     bindRemoveBookmarkButtons(card);
+                    bindLoadBookmarkButtons(card);
                 }
                 if (element.id === 'import-export') {
                     bindImportExport(card);
+                }
+                if (element.id === 'player-comparison') {
+                    bindComparisonSelectors(card);
+                }
+                if (element.id === 'team-comparison') {
+                    bindTeamComparisonSelectors(card);
                 }
                 bindElementLinks(card);
             });
@@ -747,13 +924,45 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 bookmark = { type: 'seasons', value: element.season.name };
             } else if (element.id === 'match-summary') {
                 bookmark = { type: 'matches', value: element.match.name };
+            } else if (element.id === 'player-comparison') {
+                const players = (element.comparison.players || []).filter(Boolean);
+                if (players.length === 2) {
+                    bookmark = { type: 'comparisons', value: JSON.stringify(players) };
+                }
+            } else if (element.id === 'team-comparison') {
+                const teams = (element.comparison.teams || []).filter(Boolean);
+                if (teams.length === 2) {
+                    bookmark = { type: 'teamComparisons', value: JSON.stringify(teams) };
+                }
             }
             return bookmark && bookmark.value ? bookmark : null;
         }
 
         function bookmarkListItem(type, value) {
-            return '<li class="bookmark-list-item">' + linkMarkup(type, value) +
-                '<button type="button" class="bookmark-remove" data-bookmark-type="' + escapeHtml(type.toLowerCase()) + '" data-bookmark-value="' + escapeHtml(value) + '">Remove</button></li>';
+            let label = value;
+            let loadButton = '';
+            let content = linkMarkup(type, value);
+            if (type === 'Player Comparisons') {
+                try {
+                    const players = JSON.parse(value);
+                    label = players.map(player => player.name).join(' vs ');
+                    content = '<a href="#" class="bookmark-load" data-bookmark-value="' + escapeHtml(value) + '">' + escapeHtml(label) + '</a>';
+                } catch (error) {
+                    label = 'Invalid comparison';
+                    content = escapeHtml(label);
+                }
+            } else if (type === 'Team Comparisons') {
+                try {
+                    const teams = JSON.parse(value);
+                    label = teams.map(team => team.name).join(' vs ');
+                    content = '<a href="#" class="team-bookmark-load" data-bookmark-value="' + escapeHtml(value) + '">' + escapeHtml(label) + '</a>';
+                } catch (error) {
+                    content = escapeHtml('Invalid team comparison');
+                }
+            }
+            const bookmarkType = type === 'Team Comparisons' ? 'teamComparisons' : type === 'Player Comparisons' ? 'comparisons' : type.toLowerCase();
+            return '<li class="bookmark-list-item">' + content + loadButton +
+                '<button type="button" class="bookmark-remove" data-bookmark-type="' + escapeHtml(bookmarkType) + '" data-bookmark-value="' + escapeHtml(value) + '">Remove</button></li>';
         }
 
         function bindRemoveBookmarkButtons(card) {
@@ -764,6 +973,51 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                     bookmarkElement.bookmarks[type] = bookmarkElement.bookmarks[type].filter(value => value !== button.dataset.bookmarkValue);
                     saveBookmarks();
                     render();
+                });
+            });
+        }
+
+        function bindLoadBookmarkButtons(card) {
+            card.querySelectorAll('.bookmark-load').forEach(button => {
+                button.addEventListener('click', event => {
+                    event.preventDefault();
+                    try {
+                        const comparison = elements.find(element => element.id === 'player-comparison');
+                        comparison.comparison.players = JSON.parse(button.dataset.bookmarkValue);
+                        active.add('player-comparison');
+                        saveElementData();
+                        saveActiveElements();
+                        render();
+                        const comparisonCard = stack.querySelector('[data-element-id="player-comparison"]');
+                        if (comparisonCard) {
+                            comparisonCard.classList.add('added-result');
+                            comparisonCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            setTimeout(() => comparisonCard.classList.remove('added-result'), 1800);
+                        }
+                    } catch (error) {
+                        button.disabled = true;
+                    }
+                });
+            });
+            card.querySelectorAll('.team-bookmark-load').forEach(button => {
+                button.addEventListener('click', event => {
+                    event.preventDefault();
+                    try {
+                        const comparison = elements.find(element => element.id === 'team-comparison');
+                        comparison.comparison.teams = JSON.parse(button.dataset.bookmarkValue);
+                        active.add('team-comparison');
+                        saveElementData();
+                        saveActiveElements();
+                        render();
+                        const comparisonCard = stack.querySelector('[data-element-id="team-comparison"]');
+                        if (comparisonCard) {
+                            comparisonCard.classList.add('added-result');
+                            comparisonCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            setTimeout(() => comparisonCard.classList.remove('added-result'), 1800);
+                        }
+                    } catch (error) {
+                        button.removeAttribute('href');
+                    }
                 });
             });
         }
@@ -823,7 +1077,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
         function getElementData() {
             const savedElements = {};
             elements.forEach(element => {
-                ['player', 'team', 'competition', 'season', 'match'].forEach(property => {
+                    ['player', 'comparison', 'team', 'competition', 'season', 'match'].forEach(property => {
                     if (element[property]) {
                         savedElements[element.id] = { [property]: element[property] };
                     }
@@ -918,6 +1172,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 destination.player.dateOfBirth = result.details.birthDate || '';
                 destination.player.nationality = result.details.nationality || '';
                 destination.player.team = result.details.team || '';
+                destination.player.comparison = playerDataFromResult(result);
                 const matches = Number(result.details.matches || 0);
                 const runs = Number(result.details.runs || 0);
                 const ballsFaced = Number(result.details.ballsFaced || 0);
@@ -932,6 +1187,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 destination.team.name = result.title;
                 destination.team.homeGround = result.details.homeGround || '';
                 destination.team.players = splitRelatedValues(result.details.players);
+                destination.team.metrics = teamDataFromResult(result);
             } else if (result.type === 'Competitions') {
                 destination.competition.name = result.title;
                 destination.competition.seasons = splitRelatedValues(result.details.seasons);
@@ -968,6 +1224,177 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
 
         function splitRelatedValues(value) {
             return value ? String(value).split('||').filter(Boolean) : [];
+        }
+
+        function playerDataFromResult(result) {
+            const details = result.details || {};
+            const matches = Number(details.matches || 0);
+            const runs = Number(details.runs || 0);
+            const ballsFaced = Number(details.ballsFaced || 0);
+            const wickets = Number(details.wickets || 0);
+            const runsConceded = Number(details.runsConceded || 0);
+            return {
+                id: result.id,
+                name: result.title,
+                runs: runs,
+                wickets: wickets,
+                catches: Number(details.catches || 0),
+                stumpings: Number(details.stumpings || 0),
+                runOuts: Number(details.runOuts || 0),
+                maidens: Number(details.maidens || 0),
+                bestBowling: details.bestBowling || '0/0',
+                bestBatting: Number(details.bestBatting || 0),
+                battingAverage: matches ? (runs / matches).toFixed(2) : '0.00',
+                bowlingAverage: wickets ? (runsConceded / wickets).toFixed(2) : '0.00',
+                strikeRate: ballsFaced ? ((runs / ballsFaced) * 100).toFixed(2) : '0.00'
+            };
+        }
+
+        function teamDataFromResult(result) {
+            const details = result.details || {};
+            const matches = Number(details.matches || 0);
+            const wins = Number(details.wins || 0);
+            const draws = Number(details.draws || 0);
+            const losses = Number(details.losses || 0);
+            return {
+                id: result.id,
+                name: result.title,
+                matches: matches,
+                wins: wins,
+                losses: losses,
+                draws: draws,
+                winPercentage: matches ? ((wins / matches) * 100).toFixed(2) : '0.00'
+            };
+        }
+
+
+        function comparisonMetricValue(player, metric) {
+            if (metric === 'bestBowling') {
+                const figures = String(player[metric] || '0/0').split('/').map(Number);
+                return (figures[0] || 0) * 100000 - (figures[1] || 0);
+            }
+            const value = Number(player[metric]);
+            return Number.isFinite(value) ? value : null;
+        }
+
+        function comparisonClass(player, metric, direction, players) {
+            if (players.length < 2) {
+                return '';
+            }
+            const value = comparisonMetricValue(player, metric);
+            const values = players.map(item => comparisonMetricValue(item, metric));
+            if (value === null || values.some(item => item === null) || values[0] === values[1]) {
+                return '';
+            }
+            const target = direction === 'lower' ? Math.min(...values) : Math.max(...values);
+            return value === target ? 'comparison-better' : 'comparison-worse';
+        }
+        function addResultToComparison(result, slot) {
+            const comparison = elements.find(element => element.id === 'player-comparison');
+            const players = comparison.comparison.players || [];
+            if (result.type !== 'Players' || (players.some((player, index) => player && index !== slot && player.name === result.title))) {
+                return;
+            }
+            comparison.comparison.players = [players[0] || null, players[1] || null];
+            comparison.comparison.players[slot] = playerDataFromResult(result);
+            active.add('player-comparison');
+            saveElementData();
+            saveActiveElements();
+            render();
+        }
+
+        function bindComparisonSelectors(card) {
+            const filters = card.querySelectorAll('.comparison-player-filter');
+            const selects = card.querySelectorAll('.comparison-player-select');
+            fetch('application.php?action=search&q=%25&types=Players')
+                .then(response => response.json().then(data => ({ response, data })))
+                .then(({ response, data }) => {
+                    if (!response.ok || data.error) {
+                        throw new Error(data.error || 'Player search failed.');
+                    }
+                    const players = data.results;
+                    const renderOptions = (select, filter) => {
+                        const query = filter.value.trim().toLowerCase();
+                        const selectedPlayers = elements.find(element => element.id === 'player-comparison').comparison.players || [];
+                        const selected = selectedPlayers[Number(select.dataset.slot)];
+                        const options = players.filter(player => !query || player.title.toLowerCase().includes(query));
+                        select.innerHTML = '<option value="">Choose a player...</option>' + options.map(player =>
+                            '<option value="' + escapeHtml(player.id) + '"' + (selected && (selected.id === player.id || selected.name === player.title) ? ' selected' : '') + '>' + escapeHtml(player.title) + '</option>'
+                        ).join('');
+                    };
+                    filters.forEach(filter => {
+                        const select = card.querySelector('.comparison-player-select[data-slot="' + filter.dataset.slot + '"]');
+                        filter.addEventListener('input', () => renderOptions(select, filter));
+                        renderOptions(select, filter);
+                    });
+                    selects.forEach(select => {
+                        select.addEventListener('change', () => {
+                            const result = players.find(player => player.id === select.value);
+                            if (result) {
+                                addResultToComparison(result, Number(select.dataset.slot));
+                            }
+                        });
+                    });
+                })
+                .catch(() => {
+                    filters.forEach(filter => {
+                        filter.placeholder = 'Player list unavailable';
+                    });
+                });
+        }
+
+        function addTeamResultToComparison(result, slot) {
+            const comparison = elements.find(element => element.id === 'team-comparison');
+            const teams = comparison.comparison.teams || [];
+            if (result.type !== 'Teams' || teams.some((team, index) => team && index !== slot && team.name === result.title)) {
+                return;
+            }
+            comparison.comparison.teams = [teams[0] || null, teams[1] || null];
+            comparison.comparison.teams[slot] = teamDataFromResult(result);
+            active.add('team-comparison');
+            saveElementData();
+            saveActiveElements();
+            render();
+        }
+
+        function bindTeamComparisonSelectors(card) {
+            const filters = card.querySelectorAll('.team-comparison-filter');
+            const selects = card.querySelectorAll('.team-comparison-select');
+            fetch('application.php?action=search&q=%25&types=Teams')
+                .then(response => response.json().then(data => ({ response, data })))
+                .then(({ response, data }) => {
+                    if (!response.ok || data.error) {
+                        throw new Error(data.error || 'Team search failed.');
+                    }
+                    const teams = data.results;
+                    const renderOptions = (select, filter) => {
+                        const query = filter.value.trim().toLowerCase();
+                        const selectedTeams = elements.find(element => element.id === 'team-comparison').comparison.teams || [];
+                        const selected = selectedTeams[Number(select.dataset.slot)];
+                        const options = teams.filter(team => !query || team.title.toLowerCase().includes(query));
+                        select.innerHTML = '<option value="">Choose a team...</option>' + options.map(team =>
+                            '<option value="' + escapeHtml(team.id) + '"' + (selected && (selected.id === team.id || selected.name === team.title) ? ' selected' : '') + '>' + escapeHtml(team.title) + '</option>'
+                        ).join('');
+                    };
+                    filters.forEach(filter => {
+                        const select = card.querySelector('.team-comparison-select[data-slot="' + filter.dataset.slot + '"]');
+                        filter.addEventListener('input', () => renderOptions(select, filter));
+                        renderOptions(select, filter);
+                    });
+                    selects.forEach(select => {
+                        select.addEventListener('change', () => {
+                            const result = teams.find(team => team.id === select.value);
+                            if (result) {
+                                addTeamResultToComparison(result, Number(select.dataset.slot));
+                            }
+                        });
+                    });
+                })
+                .catch(() => {
+                    filters.forEach(filter => {
+                        filter.placeholder = 'Team list unavailable';
+                    });
+                });
         }
 
         function linkMarkup(type, label, query = label) {

@@ -96,8 +96,11 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
   `balls_faced` INT NULL DEFAULT 0,
   `wickets_taken` INT NULL DEFAULT 0,
   `overs_bowled` DECIMAL(4,1) NULL DEFAULT 0.0,
+  `runs_conceded` INT NULL DEFAULT 0,
+  `maidens` INT NULL DEFAULT 0,
   `catches` INT NULL DEFAULT 0,
   `stumpings` INT NULL DEFAULT 0,
+  `run_outs` INT NULL DEFAULT 0,
   PRIMARY KEY (`performance_id`),
   CONSTRAINT `fk_perf_player`
     FOREIGN KEY (`player_id`)
@@ -108,6 +111,11 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
     REFERENCES `cricket_explorer`.`INNINGS` (`innings_id`)
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE = InnoDB;
+
+ALTER TABLE `cricket_explorer`.`PERFORMANCE`
+  ADD COLUMN IF NOT EXISTS `runs_conceded` INT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `maidens` INT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `run_outs` INT NULL DEFAULT 0;
 
 -- 8. IMPORT LOG
 CREATE TABLE IF NOT EXISTS `cricket_explorer`.`IMPORT_LOG` (

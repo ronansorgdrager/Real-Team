@@ -93,9 +93,10 @@ def run_etl():
 
         total_runs = 0
         total_wickets = 0
+        over_bowling_stats = {}
 
         # Process deliveries (balls)
-        for over in inning.get('overs', []):
+        for over_number, over in enumerate(inning.get('overs', [])):
             for delivery in over.get('deliveries', []):
                 batter = delivery.get('batter')
                 bowler = delivery.get('bowler')
@@ -116,7 +117,8 @@ def run_etl():
                             'team_id': batting_team_id,
                             'runs_scored': 0, 'balls_faced': 0,
                             'wickets_taken': 0, 'balls_bowled': 0,
-                            'catches': 0, 'stumpings': 0
+                            'catches': 0, 'stumpings': 0, 'run_outs': 0,
+                            'runs_conceded': 0, 'maidens': 0
                         }
                     performance_data[perf_key]['runs_scored'] += batter_runs
                     # Wides don't count as a ball faced usually, but for POC we just count deliveries
@@ -131,10 +133,19 @@ def run_etl():
                             'team_id': bowling_team_id,
                             'runs_scored': 0, 'balls_faced': 0,
                             'wickets_taken': 0, 'balls_bowled': 0,
-                            'catches': 0, 'stumpings': 0
+                            'catches': 0, 'stumpings': 0, 'run_outs': 0,
+                            'runs_conceded': 0, 'maidens': 0
                         }
                     if 'wides' not in delivery.get('extras', {}) and 'noballs' not in delivery.get('extras', {}):
                         performance_data[perf_key]['balls_bowled'] += 1
+                    extras = delivery.get('extras', {})
+                    performance_data[perf_key]['runs_conceded'] += total_delivery_runs - extras.get('byes', 0) - extras.get('legbyes', 0) - extras.get('penalty', 0)
+                    over_key = (bowler_id, over_number)
+                    if over_key not in over_bowling_stats:
+                        over_bowling_stats[over_key] = {'runs': 0, 'legal_balls': 0}
+                    over_bowling_stats[over_key]['runs'] += total_delivery_runs - extras.get('byes', 0) - extras.get('legbyes', 0) - extras.get('penalty', 0)
+                    if 'wides' not in extras and 'noballs' not in extras:
+                        over_bowling_stats[over_key]['legal_balls'] += 1
 
                 # Wickets
                 if 'wickets' in delivery:
@@ -155,12 +166,20 @@ def run_etl():
                                             'team_id': bowling_team_id,
                                             'runs_scored': 0, 'balls_faced': 0,
                                             'wickets_taken': 0, 'balls_bowled': 0,
-                                            'catches': 0, 'stumpings': 0
+                                            'catches': 0, 'stumpings': 0, 'run_outs': 0,
+                                            'runs_conceded': 0, 'maidens': 0
                                         }
                                     if wicket.get('kind') == 'caught':
                                         performance_data[f_perf_key]['catches'] += 1
                                     elif wicket.get('kind') == 'stumped':
                                         performance_data[f_perf_key]['stumpings'] += 1
+                                    elif wicket.get('kind') == 'run out':
+                                        performance_data[f_perf_key]['run_outs'] += 1
+
+            for (over_bowler_id, _), over_stats in over_bowling_stats.items():
+                if over_stats['legal_balls'] >= 6 and over_stats['runs'] == 0:
+                    performance_data[(over_bowler_id, innings_id)]['maidens'] += 1
+            over_bowling_stats = {}
 
         innings_data.append({
             'innings_id': innings_id,
@@ -235,9 +254,9 @@ def run_etl():
 
             cursor.execute("""
                 INSERT IGNORE INTO PERFORMANCE 
-                (performance_id, player_id, innings_id, team_id, runs_scored, balls_faced, wickets_taken, overs_bowled, catches, stumpings) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (perf_id, player_id, innings_id, stats['team_id'], stats['runs_scored'], stats['balls_faced'], stats['wickets_taken'], overs_bowled, stats['catches'], stats['stumpings']))
+                (performance_id, player_id, innings_id, team_id, runs_scored, balls_faced, wickets_taken, overs_bowled, runs_conceded, maidens, catches, stumpings, run_outs)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (perf_id, player_id, innings_id, stats['team_id'], stats['runs_scored'], stats['balls_faced'], stats['wickets_taken'], overs_bowled, stats['runs_conceded'], stats['maidens'], stats['catches'], stats['stumpings'], stats['run_outs']))
 
         # 8. Insert Import Log
         cursor.execute("""
