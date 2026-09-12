@@ -703,8 +703,39 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 const playerHeaders = players.map((player, index) =>
                     '<th>' + escapeHtml(player.name || 'Player ' + (index + 1)) + '</th>'
                 ).join('');
+                const statsFor = player => (player.stats && player.stats.length)
+                    ? player.stats
+                    : [{ format: 'All formats', matches: player.matches, runs: player.runs, average: player.battingAverage, strikeRate: player.strikeRate }];
+                const formatNames = [];
+                players.forEach(player => statsFor(player).forEach(stat => {
+                    const format = stat.format || 'All formats';
+                    if (formatNames.indexOf(format) === -1) {
+                        formatNames.push(format);
+                    }
+                }));
+                const formatStat = (player, format) => statsFor(player).find(stat => (stat.format || 'All formats') === format) || {};
+                const formatRows = formatNames.map(format => {
+                    const metrics = [
+                        ['Matches', 'matches', 'higher'],
+                        ['Runs', 'runs', 'higher'],
+                        ['Average', 'average', 'higher'],
+                        ['Strike rate', 'strikeRate', 'higher']
+                    ];
+                    return metrics.map((metric, index) => {
+                        const values = players.map(player => Number(formatStat(player, format)[metric[1]]));
+                        const cells = players.map(player => {
+                            const raw = formatStat(player, format)[metric[1]];
+                            const numeric = Number(raw);
+                            const cls = Number.isFinite(numeric) ? comparisonClassForValues(numeric, metric[2], values) : '';
+                            return '<td class="' + cls + '">' + escapeHtml(raw === undefined || raw === null ? '' : String(raw)) + '</td>';
+                        }).join('');
+                        return '<tr>' +
+                            (index === 0 ? '<th class="comparison-category" rowspan="' + metrics.length + '">' + escapeHtml(format) + '</th>' : '') +
+                            '<th>' + metric[0] + '</th>' + cells + '</tr>';
+                    }).join('');
+                }).join('');
                 const valueCells = (metric, direction) => players.map(player => '<td class="' + comparisonClass(player, metric, direction, players) + '">' + escapeHtml(String(player[metric])) + '</td>').join('');
-                const rows = [
+                const rows = formatRows + [
                     ['Fielding', 'Catches taken', 'catches', 'higher'],
                     ['', 'Stumpings', 'stumpings', 'higher'],
                     ['', 'Run outs', 'runOuts', 'higher'],
@@ -1168,21 +1199,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             }
 
             if (result.type === 'Players') {
+                const playerData = playerDataFromResult(result);
                 destination.player.name = result.title;
                 destination.player.dateOfBirth = result.details.birthDate || '';
                 destination.player.nationality = result.details.nationality || '';
                 destination.player.team = result.details.team || '';
-                destination.player.comparison = playerDataFromResult(result);
-                const matches = Number(result.details.matches || 0);
-                const runs = Number(result.details.runs || 0);
-                const ballsFaced = Number(result.details.ballsFaced || 0);
-                destination.player.stats = [{
-                    format: 'All formats',
-                    matches: matches,
-                    runs: runs,
-                    average: matches ? (runs / matches).toFixed(2) : '0.00',
-                    strikeRate: ballsFaced ? ((runs / ballsFaced) * 100).toFixed(2) : '0.00'
-                }];
+                destination.player.comparison = playerData;
+                destination.player.stats = playerData.stats;
             } else if (result.type === 'Teams') {
                 destination.team.name = result.title;
                 destination.team.homeGround = result.details.homeGround || '';
@@ -1233,9 +1256,12 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             const ballsFaced = Number(details.ballsFaced || 0);
             const wickets = Number(details.wickets || 0);
             const runsConceded = Number(details.runsConceded || 0);
+            const battingAverage = matches ? (runs / matches).toFixed(2) : '0.00';
+            const strikeRate = ballsFaced ? ((runs / ballsFaced) * 100).toFixed(2) : '0.00';
             return {
                 id: result.id,
                 name: result.title,
+                matches: matches,
                 runs: runs,
                 wickets: wickets,
                 catches: Number(details.catches || 0),
@@ -1244,9 +1270,16 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 maidens: Number(details.maidens || 0),
                 bestBowling: details.bestBowling || '0/0',
                 bestBatting: Number(details.bestBatting || 0),
-                battingAverage: matches ? (runs / matches).toFixed(2) : '0.00',
+                battingAverage: battingAverage,
                 bowlingAverage: wickets ? (runsConceded / wickets).toFixed(2) : '0.00',
-                strikeRate: ballsFaced ? ((runs / ballsFaced) * 100).toFixed(2) : '0.00'
+                strikeRate: strikeRate,
+                stats: [{
+                    format: 'All formats',
+                    matches: matches,
+                    runs: runs,
+                    average: battingAverage,
+                    strikeRate: strikeRate
+                }]
             };
         }
 
@@ -1284,6 +1317,17 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             const value = comparisonMetricValue(player, metric);
             const values = players.map(item => comparisonMetricValue(item, metric));
             if (value === null || values.some(item => item === null) || values[0] === values[1]) {
+                return '';
+            }
+            const target = direction === 'lower' ? Math.min(...values) : Math.max(...values);
+            return value === target ? 'comparison-better' : 'comparison-worse';
+        }
+
+        function comparisonClassForValues(value, direction, values) {
+            if (values.length < 2) {
+                return '';
+            }
+            if (!Number.isFinite(value) || values.some(item => !Number.isFinite(item)) || values[0] === values[1]) {
                 return '';
             }
             const target = direction === 'lower' ? Math.min(...values) : Math.max(...values);
