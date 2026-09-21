@@ -36,10 +36,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
     $connection->set_charset('utf8mb4');
 
     $searchableQueries = [
-        'players' => "SELECT 'Players' AS type, p.player_id AS id, p.player_name AS title, CONCAT('Player ID: ', p.player_id) AS subtitle, JSON_OBJECT('birthDate', p.birth_date, 'nationality', p.nationality, 'team', (SELECT t.team_name FROM PERFORMANCE perf_team INNER JOIN TEAMS t ON t.team_id = perf_team.team_id WHERE perf_team.player_id = p.player_id LIMIT 1), 'matches', COUNT(DISTINCT m.match_id), 'runs', COALESCE(SUM(perf.runs_scored), 0), 'ballsFaced', COALESCE(SUM(perf.balls_faced), 0), 'wickets', COALESCE(SUM(perf.wickets_taken), 0), 'runsConceded', COALESCE(SUM(perf.runs_conceded), 0), 'catches', COALESCE(SUM(perf.catches), 0), 'stumpings', COALESCE(SUM(perf.stumpings), 0), 'runOuts', COALESCE(SUM(perf.run_outs), 0), 'maidens', COALESCE(SUM(perf.maidens), 0), 'bestBowling', COALESCE((SELECT CONCAT(best_perf.wickets_taken, '/', best_perf.runs_conceded) FROM PERFORMANCE best_perf WHERE best_perf.player_id = p.player_id ORDER BY best_perf.wickets_taken DESC, best_perf.runs_conceded ASC LIMIT 1), '0/0'), 'bestBatting', COALESCE((SELECT best_perf.runs_scored FROM PERFORMANCE best_perf WHERE best_perf.player_id = p.player_id ORDER BY best_perf.runs_scored DESC LIMIT 1), 0)) AS details FROM PLAYERS p LEFT JOIN PERFORMANCE perf ON perf.player_id = p.player_id LEFT JOIN INNINGS i ON i.innings_id = perf.innings_id LEFT JOIN MATCHES m ON m.match_id = i.match_id WHERE p.player_name LIKE ? GROUP BY p.player_id, p.player_name, p.birth_date, p.nationality",
-        'teams' => "SELECT 'Teams' AS type, t.team_id AS id, t.team_name AS title, COALESCE(t.home_ground, 'No home ground') AS subtitle, JSON_OBJECT('homeGround', t.home_ground, 'players', COALESCE((SELECT GROUP_CONCAT(DISTINCT p.player_name ORDER BY p.player_name SEPARATOR '||') FROM PERFORMANCE perf INNER JOIN PLAYERS p ON p.player_id = perf.player_id WHERE perf.team_id = t.team_id), ''), 'matches', COUNT(DISTINCT m.match_id), 'wins', COUNT(DISTINCT CASE WHEN m.winning_team_id = t.team_id THEN m.match_id END), 'draws', COUNT(DISTINCT CASE WHEN m.match_id IS NOT NULL AND m.winning_team_id IS NULL THEN m.match_id END), 'losses', COUNT(DISTINCT CASE WHEN m.match_id IS NOT NULL AND m.winning_team_id IS NOT NULL AND m.winning_team_id <> t.team_id THEN m.match_id END)) AS details FROM TEAMS t LEFT JOIN MATCHES m ON m.team1_id = t.team_id OR m.team2_id = t.team_id WHERE CONCAT_WS(' ', t.team_name, t.home_ground) LIKE ? GROUP BY t.team_id, t.team_name, t.home_ground",
-        'competitions' => "SELECT 'Competitions' AS type, c.comp_id AS id, c.comp_name AS title, CONCAT('Competition ID: ', c.comp_id) AS subtitle, JSON_OBJECT('seasons', COALESCE((SELECT GROUP_CONCAT(s.season_name ORDER BY s.season_name SEPARATOR '||') FROM SEASONS s WHERE s.comp_id = c.comp_id), '')) AS details FROM COMPETITIONS c WHERE c.comp_name LIKE ?",
-        'seasons' => "SELECT 'Seasons' AS type, s.season_id AS id, s.season_name AS title, c.comp_name AS subtitle, JSON_OBJECT('competition', c.comp_name, 'matches', COALESCE((SELECT GROUP_CONCAT(CONCAT(m.match_date, ' - ', t1.team_name, ' vs ', t2.team_name) ORDER BY m.match_date SEPARATOR '||') FROM MATCHES m INNER JOIN TEAMS t1 ON t1.team_id = m.team1_id INNER JOIN TEAMS t2 ON t2.team_id = m.team2_id WHERE m.season_id = s.season_id), '')) AS details FROM SEASONS s INNER JOIN COMPETITIONS c ON c.comp_id = s.comp_id WHERE CONCAT_WS(' ', s.season_name, c.comp_name) LIKE ?",
+        'players' => "SELECT 'Players' AS type, p.player_id AS id, p.player_name AS title, CONCAT('Player ID: ', p.player_id) AS subtitle, JSON_OBJECT('birthDate', p.birth_date, 'nationality', p.nationality, 'team', (SELECT t.team_name FROM PERFORMANCE perf_team INNER JOIN TEAMS t ON t.team_id = perf_team.team_id WHERE perf_team.player_id = p.player_id GROUP BY t.team_id, t.team_name ORDER BY COUNT(*) DESC, t.team_name ASC LIMIT 1), 'matches', COUNT(DISTINCT m.match_id), 'runs', COALESCE(SUM(perf.runs_scored), 0), 'ballsFaced', COALESCE(SUM(perf.balls_faced), 0), 'wickets', COALESCE(SUM(perf.wickets_taken), 0), 'runsConceded', COALESCE(SUM(perf.runs_conceded), 0), 'catches', COALESCE(SUM(perf.catches), 0), 'stumpings', COALESCE(SUM(perf.stumpings), 0), 'runOuts', COALESCE(SUM(perf.run_outs), 0), 'maidens', COALESCE(SUM(perf.maidens), 0), 'outs', COALESCE(SUM(perf.is_out), 0), 'formats', COALESCE((SELECT JSON_ARRAYAGG(JSON_OBJECT('format', fmt.match_type, 'matches', fmt.matches, 'runs', fmt.runs, 'ballsFaced', fmt.balls_faced, 'outs', fmt.outs)) FROM (SELECT perf2.player_id AS player_id, COALESCE(m2.match_type, 'Unknown') AS match_type, COUNT(DISTINCT m2.match_id) AS matches, COALESCE(SUM(perf2.runs_scored), 0) AS runs, COALESCE(SUM(perf2.balls_faced), 0) AS balls_faced, COALESCE(SUM(perf2.is_out), 0) AS outs FROM PERFORMANCE perf2 INNER JOIN INNINGS i2 ON i2.innings_id = perf2.innings_id INNER JOIN MATCHES m2 ON m2.match_id = i2.match_id GROUP BY perf2.player_id, COALESCE(m2.match_type, 'Unknown')) AS fmt WHERE fmt.player_id = p.player_id), JSON_ARRAY()), 'bestBowling', COALESCE((SELECT CONCAT(best_perf.wickets_taken, '/', best_perf.runs_conceded) FROM PERFORMANCE best_perf WHERE best_perf.player_id = p.player_id ORDER BY best_perf.wickets_taken DESC, best_perf.runs_conceded ASC LIMIT 1), '0/0'), 'bestBatting', COALESCE((SELECT best_perf.runs_scored FROM PERFORMANCE best_perf WHERE best_perf.player_id = p.player_id ORDER BY best_perf.runs_scored DESC LIMIT 1), 0)) AS details FROM PLAYERS p LEFT JOIN PERFORMANCE perf ON perf.player_id = p.player_id LEFT JOIN INNINGS i ON i.innings_id = perf.innings_id LEFT JOIN MATCHES m ON m.match_id = i.match_id WHERE p.player_name LIKE ? GROUP BY p.player_id, p.player_name, p.birth_date, p.nationality",
+        'teams' => "SELECT 'Teams' AS type, t.team_id AS id, t.team_name AS title, COALESCE(t.home_ground, (SELECT m3.venue FROM MATCHES m3 WHERE (m3.team1_id = t.team_id OR m3.team2_id = t.team_id) AND m3.venue IS NOT NULL AND m3.venue <> '' GROUP BY m3.venue ORDER BY COUNT(*) DESC, m3.venue ASC LIMIT 1), 'No home ground') AS subtitle, JSON_OBJECT('homeGround', COALESCE(t.home_ground, (SELECT m3.venue FROM MATCHES m3 WHERE (m3.team1_id = t.team_id OR m3.team2_id = t.team_id) AND m3.venue IS NOT NULL AND m3.venue <> '' GROUP BY m3.venue ORDER BY COUNT(*) DESC, m3.venue ASC LIMIT 1)), 'players', COALESCE((SELECT GROUP_CONCAT(DISTINCT p.player_name ORDER BY p.player_name SEPARATOR '||') FROM PERFORMANCE perf INNER JOIN PLAYERS p ON p.player_id = perf.player_id WHERE perf.team_id = t.team_id), ''), 'matches', COUNT(DISTINCT m.match_id), 'wins', COUNT(DISTINCT CASE WHEN m.winning_team_id = t.team_id THEN m.match_id END), 'draws', COUNT(DISTINCT CASE WHEN m.match_id IS NOT NULL AND m.winning_team_id IS NULL THEN m.match_id END), 'losses', COUNT(DISTINCT CASE WHEN m.match_id IS NOT NULL AND m.winning_team_id IS NOT NULL AND m.winning_team_id <> t.team_id THEN m.match_id END)) AS details FROM TEAMS t LEFT JOIN MATCHES m ON m.team1_id = t.team_id OR m.team2_id = t.team_id WHERE CONCAT_WS(' ', t.team_name, t.home_ground) LIKE ? GROUP BY t.team_id, t.team_name, t.home_ground",
+        'competitions' => "SELECT 'Competitions' AS type, c.comp_id AS id, c.comp_name AS title, CONCAT('Competition ID: ', c.comp_id) AS subtitle, JSON_OBJECT('format', COALESCE((SELECT GROUP_CONCAT(DISTINCT m.match_type ORDER BY m.match_type SEPARATOR ', ') FROM MATCHES m INNER JOIN SEASONS s_fmt ON s_fmt.season_id = m.season_id WHERE s_fmt.comp_id = c.comp_id AND m.match_type IS NOT NULL), ''), 'currentSeason', COALESCE((SELECT s_cur.season_name FROM SEASONS s_cur INNER JOIN MATCHES m_cur ON m_cur.season_id = s_cur.season_id WHERE s_cur.comp_id = c.comp_id GROUP BY s_cur.season_id, s_cur.season_name ORDER BY MAX(m_cur.match_date) DESC LIMIT 1), ''), 'seasons', COALESCE((SELECT GROUP_CONCAT(s.season_name ORDER BY s.season_name SEPARATOR '||') FROM SEASONS s WHERE s.comp_id = c.comp_id), '')) AS details FROM COMPETITIONS c WHERE c.comp_name LIKE ?",
+        'seasons' => "SELECT 'Seasons' AS type, s.season_id AS id, s.season_name AS title, c.comp_name AS subtitle, JSON_OBJECT('competition', c.comp_name, 'start', (SELECT MIN(m_s.match_date) FROM MATCHES m_s WHERE m_s.season_id = s.season_id), 'end', (SELECT MAX(m_e.match_date) FROM MATCHES m_e WHERE m_e.season_id = s.season_id), 'matches', COALESCE((SELECT GROUP_CONCAT(CONCAT(m.match_date, ' - ', t1.team_name, ' vs ', t2.team_name) ORDER BY m.match_date SEPARATOR '||') FROM MATCHES m INNER JOIN TEAMS t1 ON t1.team_id = m.team1_id INNER JOIN TEAMS t2 ON t2.team_id = m.team2_id WHERE m.season_id = s.season_id), '')) AS details FROM SEASONS s INNER JOIN COMPETITIONS c ON c.comp_id = s.comp_id WHERE CONCAT_WS(' ', s.season_name, c.comp_name) LIKE ?",
         'matches' => "SELECT 'Matches' AS type, m.match_id AS id, CONCAT(t1.team_name, ' vs ', t2.team_name) AS title, CONCAT(m.match_date, ' | ', COALESCE(m.venue, 'Venue unknown'), ' | ', COALESCE(s.season_name, 'Season unknown')) AS subtitle, JSON_OBJECT('season', s.season_name, 'date', m.match_date, 'venue', m.venue, 'teamA', t1.team_name, 'teamB', t2.team_name, 'winningTeam', winner.team_name, 'winType', m.win_type, 'winMargin', m.win_margin, 'winMethod', m.win_method, 'matchType', m.match_type, 'tossWinner', toss.team_name, 'tossDecision', m.toss_decision) AS details FROM MATCHES m INNER JOIN TEAMS t1 ON t1.team_id = m.team1_id INNER JOIN TEAMS t2 ON t2.team_id = m.team2_id LEFT JOIN TEAMS winner ON winner.team_id = m.winning_team_id LEFT JOIN TEAMS toss ON toss.team_id = m.toss_winner_id LEFT JOIN SEASONS s ON s.season_id = m.season_id WHERE CONCAT_WS(' ', m.match_id, m.match_date, m.venue, t1.team_name, t2.team_name, s.season_name, CONCAT(t1.team_name, ' vs ', t2.team_name)) LIKE ?"
     ];
 
@@ -1213,9 +1213,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 destination.team.metrics = teamDataFromResult(result);
             } else if (result.type === 'Competitions') {
                 destination.competition.name = result.title;
+                destination.competition.format = result.details.format || '';
+                destination.competition.currentSeason = result.details.currentSeason || '';
                 destination.competition.seasons = splitRelatedValues(result.details.seasons);
             } else if (result.type === 'Seasons') {
                 destination.season.name = result.title;
+                destination.season.start = result.details.start || '';
+                destination.season.end = result.details.end || '';
                 destination.season.matches = splitRelatedValues(result.details.matches);
             } else if (result.type === 'Matches') {
                 destination.match.name = result.title;
@@ -1249,6 +1253,20 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             return value ? String(value).split('||').filter(Boolean) : [];
         }
 
+        // A batting average is runs per DISMISSAL, not runs per match - an unbeaten
+        // innings does not end one. With no dismissal at all the average is
+        // undefined rather than zero, which a scorecard shows as a dash.
+        function battingAverageOf(runs, outs, innings) {
+            if (outs > 0) {
+                return (runs / outs).toFixed(2);
+            }
+            return innings > 0 ? '-' : '0.00';
+        }
+
+        function strikeRateOf(runs, ballsFaced) {
+            return ballsFaced ? ((runs / ballsFaced) * 100).toFixed(2) : '0.00';
+        }
+
         function playerDataFromResult(result) {
             const details = result.details || {};
             const matches = Number(details.matches || 0);
@@ -1256,8 +1274,36 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
             const ballsFaced = Number(details.ballsFaced || 0);
             const wickets = Number(details.wickets || 0);
             const runsConceded = Number(details.runsConceded || 0);
-            const battingAverage = matches ? (runs / matches).toFixed(2) : '0.00';
-            const strikeRate = ballsFaced ? ((runs / ballsFaced) * 100).toFixed(2) : '0.00';
+            const outs = Number(details.outs || 0);
+            const battingAverage = battingAverageOf(runs, outs, matches);
+            const strikeRate = strikeRateOf(runs, ballsFaced);
+            // One row per format the player has actually appeared in, most-played
+            // first. The career line stays on top so the card still reads as a
+            // summary rather than a list.
+            const formatRows = (Array.isArray(details.formats) ? details.formats : [])
+                .map(entry => {
+                    const formatMatches = Number(entry.matches || 0);
+                    const formatRuns = Number(entry.runs || 0);
+                    const formatBalls = Number(entry.ballsFaced || 0);
+                    const formatOuts = Number(entry.outs || 0);
+                    return {
+                        format: entry.format || 'Unknown',
+                        matches: formatMatches,
+                        runs: formatRuns,
+                        average: battingAverageOf(formatRuns, formatOuts, formatMatches),
+                        strikeRate: strikeRateOf(formatRuns, formatBalls)
+                    };
+                })
+                .sort((a, b) => b.matches - a.matches || a.format.localeCompare(b.format));
+            const careerRow = {
+                format: 'All formats',
+                matches: matches,
+                runs: runs,
+                average: battingAverage,
+                strikeRate: strikeRate
+            };
+            // A single format would just repeat the career line verbatim.
+            const stats = formatRows.length > 1 ? [careerRow].concat(formatRows) : [careerRow];
             return {
                 id: result.id,
                 name: result.title,
@@ -1273,13 +1319,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 battingAverage: battingAverage,
                 bowlingAverage: wickets ? (runsConceded / wickets).toFixed(2) : '0.00',
                 strikeRate: strikeRate,
-                stats: [{
-                    format: 'All formats',
-                    matches: matches,
-                    runs: runs,
-                    average: battingAverage,
-                    strikeRate: strikeRate
-                }]
+                stats: stats
             };
         }
 
