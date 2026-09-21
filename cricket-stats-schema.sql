@@ -87,6 +87,21 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`INNINGS` (
   `innings_number` INT NOT NULL,
   `total_runs` INT NULL DEFAULT 0,
   `total_wickets` INT NULL DEFAULT 0,
+  -- Legal deliveries only: wides and no-balls are excluded, so this is the
+  -- number the overs figure and the run rate are built from. It is NOT the same
+  -- as SUM(PERFORMANCE.balls_faced), which counts no-balls because the batter
+  -- did face them.
+  `legal_balls` INT NULL DEFAULT 0,
+  -- Extras are stored as RUNS, not as delivery counts, so the five columns sum
+  -- to the innings' extras total and reconcile against total_runs:
+  --   total_runs = SUM(batting runs_scored) + the five columns below.
+  -- The per-bowler wides_bowled / noballs_bowled columns on PERFORMANCE count
+  -- DELIVERIES instead - different question, different unit, different name.
+  `extras_byes` INT NULL DEFAULT 0,
+  `extras_legbyes` INT NULL DEFAULT 0,
+  `extras_wides` INT NULL DEFAULT 0,
+  `extras_noballs` INT NULL DEFAULT 0,
+  `extras_penalty` INT NULL DEFAULT 0,
   PRIMARY KEY (`innings_id`),
   UNIQUE KEY `uq_innings_in_match` (`match_id`, `innings_number`),
   CONSTRAINT `fk_innings_match`
@@ -104,11 +119,35 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
   `runs_scored` INT NULL DEFAULT 0,
   `balls_faced` INT NULL DEFAULT 0,
   `is_out` TINYINT(1) NULL DEFAULT 0,
+  -- Where this player came in, 1-11, derived from the order batters and
+  -- non-strikers first appear in the ball-by-ball data. NULL on a row that is
+  -- only a bowling or fielding contribution.
+  `batting_position` INT NULL,
+  `fours` INT NULL DEFAULT 0,
+  `sixes` INT NULL DEFAULT 0,
+  -- How the batter was dismissed. dismissal_kind is Cricsheet's own wording
+  -- ('caught', 'lbw', 'run out', ...). The two id columns are what a scorecard
+  -- line needs to render: "c <fielder> b <bowler>".
+  --   * dismissal_bowler_id is set only for bowler-credited dismissals, so it
+  --     is NULL on a run out - which is exactly how a scorecard reads.
+  --   * dismissal_fielder_id holds the first fielder Cricsheet names.
+  -- Neither carries a foreign key to PLAYERS. They are nullable soft
+  -- references to a row the same import already inserted, and the pipeline runs
+  -- under an account without REFERENCES - the same reasoning as
+  -- ETL_ERROR_LOG.log_id below.
+  `dismissal_kind` VARCHAR(50) NULL,
+  `dismissal_bowler_id` VARCHAR(50) NULL,
+  `dismissal_fielder_id` VARCHAR(50) NULL,
   `wickets_taken` INT NULL DEFAULT 0,
   `overs_bowled` DECIMAL(4,1) NULL DEFAULT 0.0,
   `balls_bowled` INT NULL DEFAULT 0,
   `maidens` INT NULL DEFAULT 0,
   `runs_conceded` INT NULL DEFAULT 0,
+  -- Counts of DELIVERIES, which is what a bowling card's Wd / NB columns show.
+  -- INNINGS.extras_wides / extras_noballs count RUNS, so the two only agree
+  -- when every wide cost exactly one run.
+  `wides_bowled` INT NULL DEFAULT 0,
+  `noballs_bowled` INT NULL DEFAULT 0,
   `catches` INT NULL DEFAULT 0,
   `stumpings` INT NULL DEFAULT 0,
   `run_outs` INT NULL DEFAULT 0,
@@ -126,7 +165,54 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
--- 8. IMPORT LOG
+-- 8. MATCH SQUAD
+-- The eleven named for each team, taken from the source file's team sheets.
+-- PERFORMANCE only gets a row when a player actually does something, so this is
+-- the only place a player who was selected but never batted, bowled or fielded
+-- exists. "Did not bat" is this table LEFT JOINed against the batting rows of
+-- the innings.
+--
+-- It also keeps non-players out: the source registry lists umpires alongside
+-- the teams, and matching against the team sheets is what separates them.
+CREATE TABLE IF NOT EXISTS `cricket_explorer`.`MATCH_SQUAD` (
+  `squad_id` VARCHAR(100) NOT NULL,
+  `match_id` VARCHAR(50) NOT NULL,
+  `team_id` VARCHAR(50) NOT NULL,
+  `player_id` VARCHAR(50) NOT NULL,
+  PRIMARY KEY (`squad_id`),
+  UNIQUE KEY `uq_squad_player_in_match` (`match_id`, `player_id`),
+  KEY `ix_squad_team` (`match_id`, `team_id`),
+  KEY `ix_squad_player` (`player_id`)
+  -- No foreign keys, for the reason given on ETL_ERROR_LOG.log_id below: the
+  -- etl account is not granted REFERENCES, and a real FK here would make this
+  -- file un-runnable by the account that runs the pipeline. Nothing depends on
+  -- a cascade - the ETL clears this table by match_id on a re-import, the same
+  -- way it deletes PERFORMANCE explicitly rather than trusting the cascade on
+  -- INNINGS.
+) ENGINE = InnoDB;
+
+-- 9. FALL OF WICKETS
+-- One row per wicket, in the order they fell: "1-38 Katie Mack (4.2 ov)".
+-- runs_at_fall is the team score including any runs scored on that delivery.
+-- over_number and ball_in_over are derived from the legal-ball count at the
+-- moment the wicket fell, so a wicket off a no-ball does not advance the over.
+-- Retired hurt is not a wicket and does not appear here.
+CREATE TABLE IF NOT EXISTS `cricket_explorer`.`FALL_OF_WICKETS` (
+  `fow_id` VARCHAR(100) NOT NULL,
+  `innings_id` VARCHAR(50) NOT NULL,
+  `wicket_number` INT NOT NULL,
+  `runs_at_fall` INT NOT NULL,
+  `over_number` INT NULL,
+  `ball_in_over` INT NULL,
+  `player_out_id` VARCHAR(50) NULL,
+  PRIMARY KEY (`fow_id`),
+  UNIQUE KEY `uq_fow_in_innings` (`innings_id`, `wicket_number`)
+  -- No foreign key, same reason as MATCH_SQUAD above. The ETL deletes this
+  -- table's rows for the match explicitly before rebuilding the innings, so
+  -- nothing relies on a cascade from INNINGS.
+) ENGINE = InnoDB;
+
+-- 10. IMPORT LOG
 CREATE TABLE IF NOT EXISTS `cricket_explorer`.`IMPORT_LOG` (
   `log_id` INT NOT NULL AUTO_INCREMENT,
   `import_timestamp` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
@@ -142,7 +228,7 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`IMPORT_LOG` (
   KEY `ix_import_log_duplicate` (`is_duplicate`)
 ) ENGINE = InnoDB;
 
--- 9. ETL ERROR LOG
+-- 11. ETL ERROR LOG
 -- One row per failure during an ETL run. Written after the failed run's
 -- transaction is rolled back, so the error survives even though the partial
 -- match data does not.

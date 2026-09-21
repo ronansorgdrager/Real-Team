@@ -7,8 +7,7 @@ import traceback
 import mysql.connector
 from datetime import datetime
 
-# Connection details in one place - the failure logger needs to reconnect after a
-# failed run, and it must not drift from what the main run used.
+
 DB_CONFIG = {
     "host": "localhost",
     "user": "etl",
@@ -99,12 +98,30 @@ def stable_id(kind, *parts):
     key = kind + '|' + '|'.join('' if p is None else str(p) for p in parts)
     return str(uuid.uuid5(ID_NAMESPACE, key))
 
+# The dismissals a scorecard writes "b <bowler>" against. A run out names no
+# bowler, and neither does retirement/obstruction, so those leave
+# dismissal_bowler_id empty - which is what makes the stored row render
+# correctly without the reader having to know the rules.
+BOWLER_CREDITED_KINDS = frozenset([
+    'bowled', 'caught', 'caught and bowled', 'lbw', 'stumped', 'hit wicket',
+])
+
+# Retired hurt is the one entry that can appear in a delivery's wickets list
+# without being a dismissal - the batter is entitled to come back. It must not
+# count towards the innings wicket total or the fall of wickets. ("retired out"
+# IS a real dismissal and is deliberately not in here.)
+NOT_A_DISMISSAL = frozenset(['retired hurt', 'retired not out'])
+
 def new_perf(team_id):
     """A fresh performance accumulator for one (player, innings)."""
     return {
         'team_id': team_id,
         'runs_scored': 0, 'balls_faced': 0, 'is_out': 0,
+        'batting_position': None, 'fours': 0, 'sixes': 0,
+        'dismissal_kind': None, 'dismissal_bowler_id': None,
+        'dismissal_fielder_id': None,
         'wickets_taken': 0, 'balls_bowled': 0, 'runs_conceded': 0,
+        'wides_bowled': 0, 'noballs_bowled': 0,
         'maidens': 0, 'catches': 0, 'stumpings': 0, 'run_outs': 0
     }
 
@@ -194,9 +211,32 @@ def _extract_and_load(json_file, source_name, stage):
     toss_winner_id = teams.get(toss_winner_name) if toss_winner_name else None
     toss_decision = toss.get('decision', None)
 
+    # 5b. MATCH SQUAD. info.players is the team sheet - the eleven each side
+    # named. info.registry.people, where the ids come from, is a different list:
+    # it also carries the umpires. Matching one against the other is what keeps
+    # officials out of PLAYERS, and the squad is the only record of a player who
+    # was selected and never got to bat.
+    squad_data = []
+    participants = set()
+    for squad_team_name, squad_players in info.get('players', {}).items():
+        squad_team_id = teams.get(squad_team_name)
+        if not squad_team_id:
+            continue
+        for squad_player_name in squad_players:
+            participants.add(squad_player_name)
+            squad_player_id = players.get(squad_player_name)
+            if squad_player_id:
+                squad_data.append({
+                    'squad_id': stable_id('squad', match_id, squad_player_id),
+                    'match_id': match_id,
+                    'team_id': squad_team_id,
+                    'player_id': squad_player_id,
+                })
+
     # 6 and 7. INNINGS & PERFORMANCE
     innings_data = []
     performance_data = {} # (player_id, innings_id) -> stats
+    fall_of_wickets = []
 
     for i, inning in enumerate(data.get('innings', [])):
         innings_id = stable_id('innings', match_id, i + 1)
@@ -208,6 +248,14 @@ def _extract_and_load(json_file, source_name, stage):
 
         total_runs = 0
         total_wickets = 0
+        legal_balls = 0
+        extras_tally = {'byes': 0, 'legbyes': 0, 'wides': 0,
+                        'noballs': 0, 'penalty': 0}
+
+        # Batting order, in the order the innings reveals it: the opening pair
+        # arrive together on the first ball as batter and non-striker, everyone
+        # after that on the ball they first appear at either end.
+        batting_order = {}
 
         # Process deliveries (balls)
         for over in inning.get('overs', []):
@@ -224,7 +272,29 @@ def _extract_and_load(json_file, source_name, stage):
                 extras = delivery.get('extras', {})
 
                 total_runs += total_delivery_runs
-                
+
+                # A legal delivery is one that counts towards the over. This is
+                # what the overs figure and the run rate are built from, and it
+                # is NOT the same as balls faced - the batter faces a no-ball.
+                is_legal = 'wides' not in extras and 'noballs' not in extras
+                if is_legal:
+                    legal_balls += 1
+
+                # Extras are accumulated as RUNS, so these five plus the runs
+                # off the bat add up to the innings total.
+                for extra_kind in extras_tally:
+                    extras_tally[extra_kind] += extras.get(extra_kind, 0)
+
+                # Everyone the ball-by-ball data actually names, so the PLAYERS
+                # insert can leave the officials out.
+                for name in (batter, bowler, delivery.get('non_striker')):
+                    if name:
+                        participants.add(name)
+
+                for name in (batter, delivery.get('non_striker')):
+                    if name and name not in batting_order:
+                        batting_order[name] = len(batting_order) + 1
+
                 batter_id = players.get(batter)
                 bowler_id = players.get(bowler)
 
@@ -237,6 +307,14 @@ def _extract_and_load(json_file, source_name, stage):
                     # wide is not a ball faced by the batter
                     if 'wides' not in extras:
                         performance_data[perf_key]['balls_faced'] += 1
+                    # Boundaries. non_boundary marks the rare four or six that
+                    # was run rather than hit to the rope - four runs, but not a
+                    # four, and a scorecard does not count it as one.
+                    if not runs.get('non_boundary', False):
+                        if batter_runs == 4:
+                            performance_data[perf_key]['fours'] += 1
+                        elif batter_runs == 6:
+                            performance_data[perf_key]['sixes'] += 1
 
                 # get bowlwers performance for the innings, also gets wides/noballs
                 if bowler_id:
@@ -244,8 +322,15 @@ def _extract_and_load(json_file, source_name, stage):
                     if perf_key not in performance_data:
                         performance_data[perf_key] = new_perf(bowling_team_id)
                     # wides and no-balls are not legal balls bowled
-                    if 'wides' not in extras and 'noballs' not in extras:
+                    if is_legal:
                         performance_data[perf_key]['balls_bowled'] += 1
+                    # The Wd / NB columns on a bowling card count DELIVERIES,
+                    # not the runs they cost. INNINGS.extras_wides counts runs,
+                    # so the two only agree when every wide cost exactly one.
+                    if 'wides' in extras:
+                        performance_data[perf_key]['wides_bowled'] += 1
+                    if 'noballs' in extras:
+                        performance_data[perf_key]['noballs_bowled'] += 1
                     # Runs charged to the bowler: off the bat + wides + no-balls
                     # (byes and leg-byes are NOT the bowler's fault, so excluding)
                     performance_data[perf_key]['runs_conceded'] += (
@@ -255,7 +340,7 @@ def _extract_and_load(json_file, source_name, stage):
                     # Same figures again, but scoped to this over only (for maidens)
                     if bowler_id not in over_tally:
                         over_tally[bowler_id] = {'legal_balls': 0, 'runs_conceded': 0}
-                    if 'wides' not in extras and 'noballs' not in extras:
+                    if is_legal:
                         over_tally[bowler_id]['legal_balls'] += 1
                     over_tally[bowler_id]['runs_conceded'] += (
                         batter_runs + extras.get('wides', 0) + extras.get('noballs', 0)
@@ -263,28 +348,71 @@ def _extract_and_load(json_file, source_name, stage):
 
                 # Wickets
                 if 'wickets' in delivery:
-                    total_wickets += len(delivery['wickets'])
                     for wicket in delivery['wickets']:
                         kind = wicket.get('kind')
                         if bowler_id and kind not in ['run out', 'retired hurt', 'obstructing the field']:
                             performance_data[(bowler_id, innings_id)]['wickets_taken'] += 1
 
-                        # Mark the batter as out 
-                        # "retired hurt" is not a dismissal, so it stays not-out.
-                        if kind != 'retired hurt':
-                            out_id = players.get(wicket.get('player_out'))
+                        # Mark the batter as out. "retired hurt" is not a
+                        # dismissal, so it stays not-out - and for the same
+                        # reason it is not a wicket the innings total or the
+                        # fall of wickets should count.
+                        if kind not in NOT_A_DISMISSAL:
+                            total_wickets += 1
+                            out_name = wicket.get('player_out')
+                            if out_name:
+                                participants.add(out_name)
+                            out_id = players.get(out_name)
                             if out_id:
                                 out_key = (out_id, innings_id)
                                 if out_key not in performance_data:
                                     # non-striker run out before facing a ball
                                     performance_data[out_key] = new_perf(batting_team_id)
                                 performance_data[out_key]['is_out'] = 1
+                                performance_data[out_key]['dismissal_kind'] = kind
+
+                                # Only a dismissal the scorecard writes
+                                # "b <bowler>" against names one; a run out
+                                # leaves this empty on purpose.
+                                if kind in BOWLER_CREDITED_KINDS:
+                                    performance_data[out_key]['dismissal_bowler_id'] = bowler_id
+
+                                if kind == 'caught and bowled':
+                                    # The bowler took the catch, and Cricsheet
+                                    # names no fielder for it.
+                                    performance_data[out_key]['dismissal_fielder_id'] = bowler_id
+                                else:
+                                    # Cricsheet can name more than one fielder
+                                    # on a run out. A scorecard line has room
+                                    # for the first.
+                                    named = wicket.get('fielders') or []
+                                    if named:
+                                        performance_data[out_key]['dismissal_fielder_id'] = (
+                                            players.get(named[0].get('name'))
+                                        )
+
+                            # Score at the fall, including anything run off the
+                            # delivery that brought the wicket. The over is read
+                            # from the legal-ball count, so a wicket off a
+                            # no-ball does not advance it.
+                            fall_of_wickets.append({
+                                'fow_id': stable_id('fow', innings_id, total_wickets),
+                                'innings_id': innings_id,
+                                'wicket_number': total_wickets,
+                                'runs_at_fall': total_runs,
+                                'over_number': legal_balls // 6,
+                                'ball_in_over': legal_balls % 6,
+                                'player_out_id': out_id,
+                            })
 
                         # Fielding stats (catches, stumpings, run outs).
                         # Cricsheet lists a single fielder per dismissal, so a run out
                         # is credited to that one player rather than shared around.
                         for fielder in (wicket.get('fielders') or []):
-                            fielder_id = players.get(fielder.get('name'))
+                            fielder_name = fielder.get('name')
+                            if fielder_name:
+                                participants.add(fielder_name)
+                            fielder_id = players.get(fielder_name)
                             if fielder_id:
                                 f_perf_key = (fielder_id, innings_id)
                                 if f_perf_key not in performance_data:
@@ -310,6 +438,19 @@ def _extract_and_load(json_file, source_name, stage):
                 if tally['legal_balls'] == 6 and tally['runs_conceded'] == 0:
                     performance_data[(maiden_bowler_id, innings_id)]['maidens'] += 1
 
+        # Apply the batting order once the innings is complete. Doing it here
+        # rather than inside the delivery loop picks up the batter who was run
+        # out as non-striker without ever facing a ball - they have a position
+        # in the order even though no delivery is recorded against them.
+        for order_name, order_position in batting_order.items():
+            order_player_id = players.get(order_name)
+            if not order_player_id:
+                continue
+            order_key = (order_player_id, innings_id)
+            if order_key not in performance_data:
+                performance_data[order_key] = new_perf(batting_team_id)
+            performance_data[order_key]['batting_position'] = order_position
+
         innings_data.append({
             'innings_id': innings_id,
             'match_id': match_id,
@@ -317,7 +458,13 @@ def _extract_and_load(json_file, source_name, stage):
             'bowling_team_id': bowling_team_id,
             'innings_number': i + 1,
             'total_runs': total_runs,
-            'total_wickets': total_wickets
+            'total_wickets': total_wickets,
+            'legal_balls': legal_balls,
+            'extras_byes': extras_tally['byes'],
+            'extras_legbyes': extras_tally['legbyes'],
+            'extras_wides': extras_tally['wides'],
+            'extras_noballs': extras_tally['noballs'],
+            'extras_penalty': extras_tally['penalty']
         })
 
     # load data
@@ -349,10 +496,17 @@ def _extract_and_load(json_file, source_name, stage):
                 VALUES (%s, %s)
             """, (team_id, team_name))
 
-        # 4. Insert Players
+        # 4. Insert Players.
+        # Only the people who actually took part. The source registry maps names
+        # to ids for everyone the file mentions, umpires included, so inserting
+        # it wholesale put match officials in PLAYERS. `participants` is the
+        # union of the team sheets and everyone the ball-by-ball data names,
+        # which is that same list with the officials left out.
         for player_name, player_id in players.items():
+            if player_name not in participants:
+                continue
             cursor.execute("""
-                INSERT IGNORE INTO PLAYERS (player_id, player_name) 
+                INSERT IGNORE INTO PLAYERS (player_id, player_name)
                 VALUES (%s, %s)
             """, (player_id, player_name))
 
@@ -426,15 +580,31 @@ def _extract_and_load(json_file, source_name, stage):
             INNER JOIN INNINGS i ON i.innings_id = p.innings_id
             WHERE i.match_id = %s
         """, (match_id,))
+        cursor.execute("""
+            DELETE f FROM FALL_OF_WICKETS f
+            INNER JOIN INNINGS i ON i.innings_id = f.innings_id
+            WHERE i.match_id = %s
+        """, (match_id,))
         cursor.execute("DELETE FROM INNINGS WHERE match_id = %s", (match_id,))
+        # MATCH_SQUAD hangs off the match rather than the innings, and the match
+        # row is updated in place rather than deleted, so nothing above clears
+        # it. Same reasoning as the explicit deletes: do not rely on a cascade.
+        cursor.execute("DELETE FROM MATCH_SQUAD WHERE match_id = %s", (match_id,))
 
-        # 6. Insert Innings
+        # 6a. Insert Match Squad
+        for squad in squad_data:
+            cursor.execute("""
+                INSERT INTO MATCH_SQUAD (squad_id, match_id, team_id, player_id)
+                VALUES (%s, %s, %s, %s)
+            """, (squad['squad_id'], squad['match_id'], squad['team_id'], squad['player_id']))
+
+        # 6b. Insert Innings
         for inn in innings_data:
             cursor.execute("""
-                INSERT INTO INNINGS 
-                (innings_id, match_id, batting_team_id, bowling_team_id, innings_number, total_runs, total_wickets) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (inn['innings_id'], inn['match_id'], inn['batting_team_id'], inn['bowling_team_id'], inn['innings_number'], inn['total_runs'], inn['total_wickets']))
+                INSERT INTO INNINGS
+                (innings_id, match_id, batting_team_id, bowling_team_id, innings_number, total_runs, total_wickets, legal_balls, extras_byes, extras_legbyes, extras_wides, extras_noballs, extras_penalty)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (inn['innings_id'], inn['match_id'], inn['batting_team_id'], inn['bowling_team_id'], inn['innings_number'], inn['total_runs'], inn['total_wickets'], inn['legal_balls'], inn['extras_byes'], inn['extras_legbyes'], inn['extras_wides'], inn['extras_noballs'], inn['extras_penalty']))
 
         # 7. Insert Performance
         for (player_id, innings_id), stats in performance_data.items():
@@ -446,9 +616,17 @@ def _extract_and_load(json_file, source_name, stage):
 
             cursor.execute("""
                 INSERT INTO PERFORMANCE
-                (performance_id, player_id, innings_id, team_id, runs_scored, balls_faced, is_out, wickets_taken, overs_bowled, balls_bowled, maidens, runs_conceded, catches, stumpings, run_outs)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (perf_id, player_id, innings_id, stats['team_id'], stats['runs_scored'], stats['balls_faced'], stats['is_out'], stats['wickets_taken'], overs_bowled, stats['balls_bowled'], stats['maidens'], stats['runs_conceded'], stats['catches'], stats['stumpings'], stats['run_outs']))
+                (performance_id, player_id, innings_id, team_id, runs_scored, balls_faced, is_out, batting_position, fours, sixes, dismissal_kind, dismissal_bowler_id, dismissal_fielder_id, wickets_taken, overs_bowled, balls_bowled, maidens, runs_conceded, wides_bowled, noballs_bowled, catches, stumpings, run_outs)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (perf_id, player_id, innings_id, stats['team_id'], stats['runs_scored'], stats['balls_faced'], stats['is_out'], stats['batting_position'], stats['fours'], stats['sixes'], stats['dismissal_kind'], stats['dismissal_bowler_id'], stats['dismissal_fielder_id'], stats['wickets_taken'], overs_bowled, stats['balls_bowled'], stats['maidens'], stats['runs_conceded'], stats['wides_bowled'], stats['noballs_bowled'], stats['catches'], stats['stumpings'], stats['run_outs']))
+
+        # 7b. Insert Fall of Wickets
+        for fow in fall_of_wickets:
+            cursor.execute("""
+                INSERT INTO FALL_OF_WICKETS
+                (fow_id, innings_id, wicket_number, runs_at_fall, over_number, ball_in_over, player_out_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (fow['fow_id'], fow['innings_id'], fow['wicket_number'], fow['runs_at_fall'], fow['over_number'], fow['ball_in_over'], fow['player_out_id']))
 
         # 8. Insert Import Log. The run succeeded either way, so status stays
         # SUCCESS - the scraper's already-imported check depends on that. The
@@ -461,8 +639,10 @@ def _extract_and_load(json_file, source_name, stage):
 
         conn.commit()
         logger.info(
-            "ETL completed for %s: %d innings, %d performance rows%s",
+            "ETL completed for %s: %d innings, %d performance rows, "
+            "%d squad rows, %d wickets%s",
             source_name, len(innings_data), len(performance_data),
+            len(squad_data), len(fall_of_wickets),
             " (REPLACED a duplicate match)." if is_duplicate else ".",
         )
 

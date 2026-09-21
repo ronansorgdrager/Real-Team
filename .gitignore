@@ -2,7 +2,7 @@ venv/
 __pycache__/
 *.pyc
 .env
-mysql-xxx/
 
 # ETL run log (written by cricsheet-etl-pipeline.py)
 etl.log
+.gstack/
