@@ -327,7 +327,6 @@ ORDER BY played DESC;
 
 
 -- G2. Ground profile: average score & chase-friendliness ----------------------
--- (pace-vs-spin bias and dew effect are NOT possible without ball-by-ball data.)
 SELECT
     m.venue,
     COUNT(DISTINCT m.match_id)                  AS matches,
