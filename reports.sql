@@ -1,42 +1,9 @@
 -- =============================================================================
--- cricket_explorer :: reporting queries (CURRENT SCHEMA, no deliveries table)
--- Target: MySQL 8+  (uses window functions)
--- =============================================================================
---
--- GRAIN REMINDER
---   PERFORMANCE = one row per (player, innings).
---     * A BATTING row  => PERFORMANCE.team_id = INNINGS.batting_team_id
---     * A BOWLING row  => PERFORMANCE.team_id = INNINGS.bowling_team_id
---   A player appears in up to 2 innings per match (bats in one, bowls in the other),
---   so batting and bowling rows never collide within a single innings.
---
--- KNOWN CEILINGS
---   There is no deliveries table, so nothing can be sliced BELOW the innings grain:
---     * Phase splits (powerplay/death), partnerships, batting position,
---       batter-vs-bowler matchups, pace-vs-spin, over-by-over progression.
---   Anything that collapses to a single number per (player, innings) IS possible,
---   because the ETL reads the ball-by-ball JSON before it aggregates. maidens and
---   run_outs were added that way. Still NOT COLLECTED (but perfectly collectable
---   the same way, if wanted): 4s, 6s, dot balls, extras breakdown.
---   The trade-off is that a pre-aggregated column freezes its slice - "maidens in
---   the powerplay" would be a new column and a full re-import, not a WHERE clause.
---
---   * TEAMS.home_ground        -> column exists but ETL never populates it
---                                  (home/away splits need this filled first)
---
--- overs_bowled is stored in CRICKET NOTATION (4.3 = 4 overs + 3 balls), so you
--- CANNOT sum it arithmetically. Every query below that aggregates overs first
--- reconstructs legal balls: balls = FLOOR(ov)*6 + ROUND((ov-FLOOR(ov))*10).
--- =============================================================================
-
-
--- =============================================================================
 -- SECTION A :: PER-PLAYER BATTING
 -- =============================================================================
 
 -- A1. Career batting card ------------------------------------------------------
 -- Now includes average, not-outs and true ducks (requires the is_out column).
--- Still NOT answerable: boundary%/dot% (need ball-by-ball data).
 SELECT
     pl.player_name,
     COUNT(*)                                              AS innings,
