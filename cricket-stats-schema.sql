@@ -1,5 +1,5 @@
-SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0;
-SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;
+SET UNIQUE_CHECKS=0;
+SET FOREIGN_KEY_CHECKS=0;
 
 CREATE SCHEMA IF NOT EXISTS `cricket_explorer` DEFAULT CHARACTER SET utf8mb4;
 USE `cricket_explorer`;
@@ -8,7 +8,8 @@ USE `cricket_explorer`;
 CREATE TABLE IF NOT EXISTS `cricket_explorer`.`COMPETITIONS` (
   `comp_id` VARCHAR(50) NOT NULL,
   `comp_name` VARCHAR(255) NOT NULL,
-  PRIMARY KEY (`comp_id`)
+  PRIMARY KEY (`comp_id`),
+  UNIQUE KEY `uq_competition_name` (`comp_name`)
 ) ENGINE = InnoDB;
 
 -- 2. SEASONS
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`SEASONS` (
   `comp_id` VARCHAR(50) NOT NULL,
   `season_name` VARCHAR(100) NOT NULL,
   PRIMARY KEY (`season_id`),
+  UNIQUE KEY `uq_season_in_competition` (`comp_id`, `season_name`),
   CONSTRAINT `fk_season_comp`
     FOREIGN KEY (`comp_id`)
     REFERENCES `cricket_explorer`.`COMPETITIONS` (`comp_id`)
@@ -28,10 +30,16 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`TEAMS` (
   `team_id` VARCHAR(50) NOT NULL,
   `team_name` VARCHAR(255) NOT NULL,
   `home_ground` VARCHAR(255) NULL,
-  PRIMARY KEY (`team_id`)
+  PRIMARY KEY (`team_id`),
+  UNIQUE KEY `uq_team_name` (`team_name`)
 ) ENGINE = InnoDB;
 
 -- 4. MATCHES
+-- match_id is not random: the ETL derives it from the match's natural key
+-- (date + the two teams + venue + competition + season + gender + match_type),
+-- so re-importing the same source file collides on the primary key instead of
+-- inserting the fixture a second time. A plain UNIQUE over those columns can't
+-- do the job here because venue is nullable and MySQL lets NULLs repeat.
 CREATE TABLE IF NOT EXISTS `cricket_explorer`.`MATCHES` (
   `match_id` VARCHAR(50) NOT NULL,
   `season_id` VARCHAR(50) NOT NULL,
@@ -80,13 +88,14 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`INNINGS` (
   `total_runs` INT NULL DEFAULT 0,
   `total_wickets` INT NULL DEFAULT 0,
   PRIMARY KEY (`innings_id`),
+  UNIQUE KEY `uq_innings_in_match` (`match_id`, `innings_number`),
   CONSTRAINT `fk_innings_match`
     FOREIGN KEY (`match_id`)
     REFERENCES `cricket_explorer`.`MATCHES` (`match_id`)
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
--- 7. PERFORMANCE (Fact Table)
+-- 7. PERFORMANCE (Fact Table) - added is_out, runs_conceeded, balls_bowled, maidens, run_outs - enables more meaningful reporting
 CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
   `performance_id` VARCHAR(100) NOT NULL,
   `player_id` VARCHAR(50) NOT NULL,
@@ -94,14 +103,19 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
   `team_id` VARCHAR(50) NOT NULL,
   `runs_scored` INT NULL DEFAULT 0,
   `balls_faced` INT NULL DEFAULT 0,
+  `is_out` TINYINT(1) NULL DEFAULT 0,
   `wickets_taken` INT NULL DEFAULT 0,
   `overs_bowled` DECIMAL(4,1) NULL DEFAULT 0.0,
-  `runs_conceded` INT NULL DEFAULT 0,
+  `balls_bowled` INT NULL DEFAULT 0,
   `maidens` INT NULL DEFAULT 0,
+  `runs_conceded` INT NULL DEFAULT 0,
   `catches` INT NULL DEFAULT 0,
   `stumpings` INT NULL DEFAULT 0,
   `run_outs` INT NULL DEFAULT 0,
   PRIMARY KEY (`performance_id`),
+  -- One row per player per innings. This is what stops a re-import from
+  -- double-counting a player's runs, wickets and fielding.
+  UNIQUE KEY `uq_performance_player_innings` (`player_id`, `innings_id`),
   CONSTRAINT `fk_perf_player`
     FOREIGN KEY (`player_id`)
     REFERENCES `cricket_explorer`.`PLAYERS` (`player_id`)
@@ -112,19 +126,46 @@ CREATE TABLE IF NOT EXISTS `cricket_explorer`.`PERFORMANCE` (
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE = InnoDB;
 
-ALTER TABLE `cricket_explorer`.`PERFORMANCE`
-  ADD COLUMN IF NOT EXISTS `runs_conceded` INT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS `maidens` INT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS `run_outs` INT NULL DEFAULT 0;
-
 -- 8. IMPORT LOG
 CREATE TABLE IF NOT EXISTS `cricket_explorer`.`IMPORT_LOG` (
   `log_id` INT NOT NULL AUTO_INCREMENT,
   `import_timestamp` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
   `source_url` VARCHAR(255) NULL,
   `status` VARCHAR(50) NULL,
-  PRIMARY KEY (`log_id`)
+  -- Set when the import replaced a match that was already in the database.
+  -- status stays SUCCESS in that case - the run did work - so this is what
+  -- separates a first-time import from a re-import.
+  `is_duplicate` TINYINT(1) NOT NULL DEFAULT 0,
+  `notes` VARCHAR(500) NULL,
+  PRIMARY KEY (`log_id`),
+  KEY `ix_import_log_source` (`source_url`, `status`),
+  KEY `ix_import_log_duplicate` (`is_duplicate`)
 ) ENGINE = InnoDB;
 
-SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;
-SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS;
+-- 9. ETL ERROR LOG
+-- One row per failure during an ETL run. Written after the failed run's
+-- transaction is rolled back, so the error survives even though the partial
+-- match data does not.
+--
+-- log_id points at the IMPORT_LOG row for the same failure, but deliberately has
+-- no foreign key: the etl user is not granted REFERENCES, so a real FK here
+-- would make the schema un-runnable by the account that actually runs the
+-- pipeline. It is nullable in any case, because a failure can happen before
+-- there is anything to link to - a missing file, malformed JSON, or a
+-- connection that never opened.
+CREATE TABLE IF NOT EXISTS `cricket_explorer`.`ETL_ERROR_LOG` (
+  `error_id` INT NOT NULL AUTO_INCREMENT,
+  `occurred_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+  `log_id` INT NULL,
+  `source_file` VARCHAR(255) NULL,
+  `stage` VARCHAR(50) NULL,
+  `error_type` VARCHAR(100) NULL,
+  `error_message` TEXT NULL,
+  `traceback` TEXT NULL,
+  PRIMARY KEY (`error_id`),
+  KEY `ix_error_log_source` (`source_file`, `occurred_at`),
+  KEY `ix_error_log_import` (`log_id`)
+) ENGINE = InnoDB;
+
+SET FOREIGN_KEY_CHECKS=1;
+SET UNIQUE_CHECKS=1;
