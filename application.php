@@ -70,6 +70,132 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
     $connection->close();
     exit;
 }
+// ======== DECLANS WEB SCRAPER INTEGRATION ADDITION - START ============
+if (isset($_GET['action']) && $_GET['action'] === 'sync') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    define('PYTHON_BIN', 'py');
+
+    // the minimal admin gate established. this isnt a full login system as that would be simply out of scope for the project. this is essentially just a shared passphrase as the admin control
+    // so as to make sure that our application isnt wide open to anyone who happens to find the button or the URL
+    define('ADMIN_KEY', 'RDRP'); // This passphrase being RDRP should be simple and memorable since it is just the initials of our team members
+
+    $providedKey = (string) ($_GET['admin_key'] ?? '');
+    if (!hash_equals(ADMIN_KEY, $providedKey)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Invalid or missing admin key.']);
+        exit;
+    }
+
+    // this is required to match the COMPETITIONS keys that are in cricsheet_scraper hence why i have kept it as an explicit whitelist
+    $allowedCompetitions = [
+        'recently_added', 'bbl', 'ipl', 'cpl', 'psl', 't20s',
+        't20s_female', 'odis', 'odis_female', 'tests', 'ssh', 'all'
+    ];
+
+    $competition = strtolower(trim((string) ($_GET['competition'] ?? 'recently_added')));
+    if (!in_array($competition, $allowedCompetitions, true)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Unknown competition code: ' . $competition]);
+        exit;
+    }
+
+    $season = trim((string) ($_GET['season'] ?? ''));
+    // the cricsheet seasons from the website look like "2024" or "2009/10" as nothing else is a legitimate value so anything outside that shape will just get rejected outright
+    if ($season !== '' && !preg_match('/^[A-Za-z0-9\/]{1,20}$/', $season)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid season format.']);
+        exit;
+    }
+
+    mysqli_report(MYSQLI_REPORT_OFF);
+    try {
+        $connection = @new mysqli('localhost', 'etl', 'etlv1', 'cricket_explorer');
+    } catch (Throwable $error) {
+        $connection = null;
+    }
+    if (!$connection || $connection->connect_errno) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Could not connect to the cricket database.']);
+        exit;
+    }
+    $connection->set_charset('utf8mb4');
+
+    $startTime = $connection->query('SELECT NOW()')->fetch_row()[0];
+
+    $args = [PYTHON_BIN, 'cricsheet_scraper.py', '--competition', $competition];
+    if ($season !== '') {
+        $args[] = '--season';
+        $args[] = $season;
+    }
+
+    $descriptors = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+
+    $process = proc_open($args, $descriptors, $pipes, __DIR__);
+
+    if (!is_resource($process)) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Could not start the scraper process.']);
+        $connection->close();
+        exit;
+    }
+
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+
+    $successCount = 0;
+    $failedCount = 0;
+    $countStatement = $connection->prepare(
+        "SELECT status, COUNT(*) AS n FROM IMPORT_LOG WHERE import_timestamp >= ? GROUP BY status"
+    );
+    $countStatement->bind_param('s', $startTime);
+    $countStatement->execute();
+    $result = $countStatement->get_result();
+    while ($row = $result->fetch_assoc()) {
+        if ($row['status'] === 'SUCCESS') {
+            $successCount = (int) $row['n'];
+        } elseif ($row['status'] === 'FAILED') {
+            $failedCount = (int) $row['n'];
+        }
+    }
+    $countStatement->close();
+    $connection->close();
+
+    $extractedCount = 0;
+    if (preg_match('/New files extracted:\s*(\d+)/', $stdout, $matches)) {
+        $extractedCount = (int) $matches[1];
+    }
+
+    if ($exitCode === 0 && $successCount === 0 && $failedCount === 0 && $extractedCount === 0) {
+        $message = "Sync ran, but every file was already up to date. There's nothing new to import.";
+    } elseif ($exitCode === 0 && $successCount === 0 && $failedCount === 0 && $extractedCount > 0) {
+        $message = "Downloaded and checked {$extractedCount} file(s), but all were already in the database, so nothing new was imported.";
+    } elseif ($exitCode === 0) {
+        $message = "Sync complete: {$successCount} file(s) imported, {$failedCount} failed.";
+    } else {
+        $message = "Sync finished with errors. {$successCount} succeeded, {$failedCount} failed.";
+    }
+
+    echo json_encode([
+        'success' => $exitCode === 0,
+        'filesSucceeded' => $successCount,
+        'filesFailed' => $failedCount,
+        'message' => $message,
+        // ...
+        'log' => mb_substr($stdout . $stderr, -2000),
+    ]);
+    exit;
+}
+// ===== DECLAN'S WEB SCRAPER INTEGRATION ADDITION - END ===========
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -519,7 +645,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 id: 'import-export',
                 title: 'Import & Export',
                 description: 'Import or export data.'
+            },
+            // ===== DECLANS WEB SCRAPER INTEGRATION ADDITION 2 - START =====
+            {
+                id: 'data-sync',
+                title: 'Sync Data',
+                description: 'Pull new match data from Cricsheet into the database. Requires the admin key.'
             }
+            // ========= DECLANS WEB SCRAPER INTEGRATION ADDITION 2 - END ==============
         ];
 
         const STORAGE_KEY = 'cricket-explorer-active';
@@ -843,6 +976,33 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                     '<p class="import-status" aria-live="polite"></p>' +
                     '</div>';
             }
+        // ===== DECLAN'S WEB SCRAPER INTEGRATION ADDITION 3 - START ====
+            if (element.id === 'data-sync') {
+                return '<div>' +
+                    '<label for="sync-competition"><strong>Competition</strong></label>' +
+                    '<select id="sync-competition" class="sync-competition" style="display:block; margin: 6px 0 12px;">' +
+                        '<option value="recently_added">Recently added (last 2 days)</option>' +
+                        '<option value="ipl">IPL</option>' +
+                        '<option value="bbl">BBL</option>' +
+                        '<option value="cpl">CPL</option>' +
+                        '<option value="psl">PSL</option>' +
+                        '<option value="t20s">T20 Internationals</option>' +
+                        '<option value="t20s_female">T20 Internationals (Women)</option>' +
+                        '<option value="odis">ODIs</option>' +
+                        '<option value="odis_female">ODIs (Women)</option>' +
+                        '<option value="tests">Tests</option>' +
+                        '<option value="ssh">SSH</option>' +
+                        '<option value="all">All</option>' +
+                    '</select>' +
+                    '<label for="sync-season"><strong>Season (optional)</strong></label>' +
+                    '<input id="sync-season" class="sync-season" type="text" placeholder="e.g. 2024 or 2009/10" style="display:block; margin: 6px 0 12px;" />' +
+                    '<label for="sync-admin-key"><strong>Admin key</strong></label>' +
+                    '<input id="sync-admin-key" class="sync-admin-key" type="password" placeholder="Required to run a sync" style="display:block; margin: 6px 0 12px;" />' +
+                    '<button type="button" class="sync-button" style="padding: 8px 14px; border: 1px solid #999; background: #f0f0f0; cursor: pointer; border-radius: 4px;">Sync Data</button>' +
+                    '<p class="sync-status" aria-live="polite"></p>' +
+                    '</div>';
+            }
+        // ===== DECLANS WEB SCRAPER INTEGRATION ADDITION 3 - END =====
             if (element.id === 'bookmarks' && element.bookmarks) {
                 const bookmarks = element.bookmarks;
                 const players = bookmarks.players && bookmarks.players.length
@@ -905,6 +1065,11 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 if (element.id === 'import-export') {
                     bindImportExport(card);
                 }
+        // ===== DECLAN'S WEB SCRAPER INTEGRATION ADDITION 4 - START ========
+                if (element.id === 'data-sync') {
+                    bindDataSync(card);
+                }
+        // ===== DECLAN'S WEB SCRAPER INTEGRATION ADDITION 4 - END =========
                 if (element.id === 'player-comparison') {
                     bindComparisonSelectors(card);
                 }
@@ -1104,6 +1269,48 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
                 }
             });
         }
+
+        // ==== DECLANS WEB SCRAPER INTEGRATION ADDITION 5 START =====
+        function bindDataSync(card) {
+            const competitionSelect = card.querySelector('.sync-competition');
+            const seasonInput = card.querySelector('.sync-season');
+            const adminKeyInput = card.querySelector('.sync-admin-key');
+            const syncButton = card.querySelector('.sync-button');
+            const status = card.querySelector('.sync-status');
+
+            syncButton.addEventListener('click', async () => {
+                const competition = competitionSelect.value;
+                const season = seasonInput.value.trim();
+                const adminKey = adminKeyInput.value;
+
+                if (!adminKey) {
+                    status.textContent = 'Error: admin key required.';
+                    return;
+                }
+
+                syncButton.disabled = true;
+                status.textContent = 'Syncing... this can take a while for a large competition.';
+
+                try {
+                    const params = new URLSearchParams({ action: 'sync', competition, admin_key: adminKey });
+                    if (season) {
+                        params.set('season', season);
+                    }
+                    const response = await fetch('application.php?' + params.toString());
+                    const data = await response.json();
+
+                    if (!response.ok || data.error) {
+                        throw new Error(data.error || 'Sync failed.');
+                    }
+                    status.textContent = data.message;
+                } catch (error) {
+                    status.textContent = 'Error: ' + error.message;
+                } finally {
+                    syncButton.disabled = false;
+                }
+            });
+        }
+        // ===== DECLANS WEB SCRAPER INTEGRATION ADDITION 5 END ======
 
         function getElementData() {
             const savedElements = {};
