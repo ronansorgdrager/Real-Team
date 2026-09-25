@@ -12,3 +12,6 @@ Running the scraper
 3. Run it: py cricsheet_scraper.py -c ipl. Without -c, it downloads matches from the last 2 days. Add --dry-run to download and extract without running the ETL.
 4. To run the ETL on files you already have: py cricsheet_scraper.py -f cricsheet_data. It skips any file already marked SUCCESS in IMPORT_LOG.
 5. Read the summary at the end. If any files failed, look in etl.log or ETL_ERROR_LOG to see why.
+
+
+Each record's ID is a fingerprint calculated from the details that describe it, so the same thing always gets the same ID and we never store it twice.

@@ -87,10 +87,7 @@ def record_failure(source_name, stage, exc):
 def generate_id():
     return str(uuid.uuid4())
 
-# Fixed namespace for deterministic ids. Every id below is derived from the
-# natural key of the thing it identifies, so importing the same source data
-# twice produces the same ids and the INSERTs collide instead of duplicating.
-# Do not change this value - it would orphan every id already in the database.
+# Each record's ID is a fingerprint calculated from the details that describe it, so the same thing always gets the same ID and we never store it twice.
 ID_NAMESPACE = uuid.UUID('6f1b9d64-2c3e-5a8f-9b4d-1e7c0a5f3d82')
 
 def stable_id(kind, *parts):
@@ -100,8 +97,7 @@ def stable_id(kind, *parts):
 
 # The dismissals a scorecard writes "b <bowler>" against. A run out names no
 # bowler, and neither does retirement/obstruction, so those leave
-# dismissal_bowler_id empty - which is what makes the stored row render
-# correctly without the reader having to know the rules.
+# dismissal_bowler_id empty
 BOWLER_CREDITED_KINDS = frozenset([
     'bowled', 'caught', 'caught and bowled', 'lbw', 'stumped', 'hit wicket',
 ])
@@ -212,10 +208,7 @@ def _extract_and_load(json_file, source_name, stage):
     toss_decision = toss.get('decision', None)
 
     # 5b. MATCH SQUAD. info.players is the team sheet - the eleven each side
-    # named. info.registry.people, where the ids come from, is a different list:
-    # it also carries the umpires. Matching one against the other is what keeps
-    # officials out of PLAYERS, and the squad is the only record of a player who
-    # was selected and never got to bat.
+    # named. info.registry.people, where the ids come from
     squad_data = []
     participants = set()
     for squad_team_name, squad_players in info.get('players', {}).items():
@@ -324,9 +317,6 @@ def _extract_and_load(json_file, source_name, stage):
                     # wides and no-balls are not legal balls bowled
                     if is_legal:
                         performance_data[perf_key]['balls_bowled'] += 1
-                    # The Wd / NB columns on a bowling card count DELIVERIES,
-                    # not the runs they cost. INNINGS.extras_wides counts runs,
-                    # so the two only agree when every wide cost exactly one.
                     if 'wides' in extras:
                         performance_data[perf_key]['wides_bowled'] += 1
                     if 'noballs' in extras:
@@ -371,9 +361,6 @@ def _extract_and_load(json_file, source_name, stage):
                                 performance_data[out_key]['is_out'] = 1
                                 performance_data[out_key]['dismissal_kind'] = kind
 
-                                # Only a dismissal the scorecard writes
-                                # "b <bowler>" against names one; a run out
-                                # leaves this empty on purpose.
                                 if kind in BOWLER_CREDITED_KINDS:
                                     performance_data[out_key]['dismissal_bowler_id'] = bowler_id
 
@@ -438,10 +425,7 @@ def _extract_and_load(json_file, source_name, stage):
                 if tally['legal_balls'] == 6 and tally['runs_conceded'] == 0:
                     performance_data[(maiden_bowler_id, innings_id)]['maidens'] += 1
 
-        # Apply the batting order once the innings is complete. Doing it here
-        # rather than inside the delivery loop picks up the batter who was run
-        # out as non-striker without ever facing a ball - they have a position
-        # in the order even though no delivery is recorded against them.
+        # Apply the batting order once the innings is complete
         for order_name, order_position in batting_order.items():
             order_player_id = players.get(order_name)
             if not order_player_id:
@@ -497,11 +481,7 @@ def _extract_and_load(json_file, source_name, stage):
             """, (team_id, team_name))
 
         # 4. Insert Players.
-        # Only the people who actually took part. The source registry maps names
-        # to ids for everyone the file mentions, umpires included, so inserting
-        # it wholesale put match officials in PLAYERS. `participants` is the
-        # union of the team sheets and everyone the ball-by-ball data names,
-        # which is that same list with the officials left out.
+        # Only the people who actually took part in the match are inserted, so officials don't appear in PLAYERS.
         for player_name, player_id in players.items():
             if player_name not in participants:
                 continue
@@ -510,11 +490,7 @@ def _extract_and_load(json_file, source_name, stage):
                 VALUES (%s, %s)
             """, (player_id, player_name))
 
-        # Is this match already in the database? match_id is derived from the
-        # match's natural key, so a row here means this same fixture has been
-        # imported before - whether from this file or from a differently-named
-        # one. The import still goes ahead and replaces it, but it gets flagged
-        # rather than passing silently as a first-time import.
+        # Is this match already in the database? The import still goes ahead and replaces it, but it gets flagged
         cursor.execute("SELECT COUNT(*) FROM MATCHES WHERE match_id = %s", (match_id,))
         is_duplicate = cursor.fetchone()[0] > 0
         import_note = None
@@ -547,10 +523,6 @@ def _extract_and_load(json_file, source_name, stage):
             logger.warning(import_note)
 
         # 5. Insert Match.
-        # match_id is derived from the match's natural key, so re-importing the
-        # same fixture hits the primary key and updates in place rather than
-        # inserting a second copy. The UPDATE clause means a re-run also picks up
-        # corrections and newly-extracted columns instead of being ignored.
         cursor.execute("""
             INSERT INTO MATCHES 
             (match_id, season_id, match_date, venue, team1_id, team2_id, winning_team_id, win_type, win_margin, win_method, match_type, toss_winner_id, toss_decision) 
@@ -570,11 +542,7 @@ def _extract_and_load(json_file, source_name, stage):
                 toss_decision = VALUES(toss_decision)
         """, (match_id, season_id, match_date, venue, team1_id, team2_id, winning_team_id, win_type, win_margin, win_method, match_type, toss_winner_id, toss_decision))
 
-        # Clear this match's existing innings and performance rows so the rebuild
-        # below is a genuine replace. Without this, a row that should no longer
-        # exist - a player dropped by a source-data correction - would survive.
-        # PERFORMANCE is deleted explicitly rather than left to the cascade on
-        # INNINGS, so the pipeline does not depend on how the FKs are declared.
+        # Clear this match's existing innings and performance rows - When we reload a match, we wipe its old scorecard and write the new one in full, so we never end up with a mix of old and new data
         cursor.execute("""
             DELETE p FROM PERFORMANCE p
             INNER JOIN INNINGS i ON i.innings_id = p.innings_id
@@ -586,12 +554,9 @@ def _extract_and_load(json_file, source_name, stage):
             WHERE i.match_id = %s
         """, (match_id,))
         cursor.execute("DELETE FROM INNINGS WHERE match_id = %s", (match_id,))
-        # MATCH_SQUAD hangs off the match rather than the innings, and the match
-        # row is updated in place rather than deleted, so nothing above clears
-        # it. Same reasoning as the explicit deletes: do not rely on a cascade.
         cursor.execute("DELETE FROM MATCH_SQUAD WHERE match_id = %s", (match_id,))
 
-        # 6a. Insert Match Squad
+        # 6a. Insert Match Squad 
         for squad in squad_data:
             cursor.execute("""
                 INSERT INTO MATCH_SQUAD (squad_id, match_id, team_id, player_id)
@@ -620,7 +585,7 @@ def _extract_and_load(json_file, source_name, stage):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (perf_id, player_id, innings_id, stats['team_id'], stats['runs_scored'], stats['balls_faced'], stats['is_out'], stats['batting_position'], stats['fours'], stats['sixes'], stats['dismissal_kind'], stats['dismissal_bowler_id'], stats['dismissal_fielder_id'], stats['wickets_taken'], overs_bowled, stats['balls_bowled'], stats['maidens'], stats['runs_conceded'], stats['wides_bowled'], stats['noballs_bowled'], stats['catches'], stats['stumpings'], stats['run_outs']))
 
-        # 7b. Insert Fall of Wickets
+        # 7b. insert fall of wickets
         for fow in fall_of_wickets:
             cursor.execute("""
                 INSERT INTO FALL_OF_WICKETS
@@ -628,10 +593,7 @@ def _extract_and_load(json_file, source_name, stage):
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (fow['fow_id'], fow['innings_id'], fow['wicket_number'], fow['runs_at_fall'], fow['over_number'], fow['ball_in_over'], fow['player_out_id']))
 
-        # 8. Insert Import Log. The run succeeded either way, so status stays
-        # SUCCESS - the scraper's already-imported check depends on that. The
-        # duplicate is recorded alongside it, so re-imports stay queryable:
-        #   SELECT * FROM IMPORT_LOG WHERE is_duplicate = 1;
+        # 8. insert import log.
         cursor.execute("""
             INSERT INTO IMPORT_LOG (source_url, status, is_duplicate, notes) 
             VALUES (%s, %s, %s, %s)
