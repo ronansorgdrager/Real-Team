@@ -189,7 +189,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'sync') {
         'filesSucceeded' => $successCount,
         'filesFailed' => $failedCount,
         'message' => $message,
-        // ...
         'log' => mb_substr($stdout . $stderr, -2000),
     ]);
     exit;
@@ -976,8 +975,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'sync') {
                     '<p class="import-status" aria-live="polite"></p>' +
                     '</div>';
             }
-        // ===== DECLAN'S WEB SCRAPER INTEGRATION ADDITION 3 - START ====
+        // ===== DECLAN'S WEB SCRAPER INTEGRATION ADDITION 3 START ====
             if (element.id === 'data-sync') {
+                const currentYear = new Date().getFullYear();
+                let seasonOptions = '<option value="">Any season</option>';
+                for (let y = currentYear; y >= currentYear - 25; y--) {
+                    seasonOptions += '<option value="' + y + '">' + y + '</option>';
+                }
+                
                 return '<div>' +
                     '<label for="sync-competition"><strong>Competition</strong></label>' +
                     '<select id="sync-competition" class="sync-competition" style="display:block; margin: 6px 0 12px;">' +
@@ -995,7 +1000,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'sync') {
                         '<option value="all">All</option>' +
                     '</select>' +
                     '<label for="sync-season"><strong>Season (optional)</strong></label>' +
-                    '<input id="sync-season" class="sync-season" type="text" placeholder="e.g. 2024 or 2009/10" style="display:block; margin: 6px 0 12px;" />' +
+                    '<select id="sync-season" class="sync-season" style="display:block; margin: 6px 0 12px;">' + seasonOptions + '</select>' +
                     '<label for="sync-admin-key"><strong>Admin key</strong></label>' +
                     '<input id="sync-admin-key" class="sync-admin-key" type="password" placeholder="Required to run a sync" style="display:block; margin: 6px 0 12px;" />' +
                     '<button type="button" class="sync-button" style="padding: 8px 14px; border: 1px solid #999; background: #f0f0f0; cursor: pointer; border-radius: 4px;">Sync Data</button>' +
