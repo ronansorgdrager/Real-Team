@@ -7,7 +7,7 @@ Do these steps once per machine. All commands are run from the repo root.
 ### 1. Install the tools
 
 - **Git**, then clone the repo: `git clone https://github.com/ronansorgdrager/Real-Team`
-- **Python 3.11 or newer**, from python.org. This installs the `py` launcher, which the commands below use. The pinned pandas and numpy versions won't install on older Pythons.
+- **Python 3.10 or newer**, from python.org. This installs the `py` launcher, which the commands below use. The pinned package versions need 3.10 or newer.
 - **MySQL Server**, running on localhost (port 3306), plus MySQL Workbench or the `mysql` command line tool.
 - **PHP 7.4 or newer** with the `mysqli` extension turned on. In `php.ini`, make sure the line `extension=mysqli` doesn't start with `;`.
 
