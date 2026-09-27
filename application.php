@@ -74,7 +74,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'search') {
 if (isset($_GET['action']) && $_GET['action'] === 'sync') {
     header('Content-Type: application/json; charset=utf-8');
 
-    define('PYTHON_BIN', 'py');
+    // use the project's venv so the sync gets the packages from requirements.txt, falling back to the system launcher if there's no venv
+    $venvPython = __DIR__ . '\\venv\\Scripts\\python.exe';
+    define('PYTHON_BIN', file_exists($venvPython) ? $venvPython : 'py');
 
     // the minimal admin gate established. this isnt a full login system as that would be simply out of scope for the project. this is essentially just a shared passphrase as the admin control
     // so as to make sure that our application isnt wide open to anyone who happens to find the button or the URL
