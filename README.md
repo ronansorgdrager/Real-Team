@@ -115,13 +115,13 @@ What reads it:
 
 `stage` is one of:
 
-| Stage | What was running | Typical causes |
-|---|---|---|
-| `startup` | Setup before the file is opened | Only if errors with the file |
-| `read_source` | Opening and parsing the JSON | Missing file, invalid JSON |
-| `transform` | Building rows from the JSON | A file whose structure isn't Cricsheet's |
-| `connect` | Opening the database connection | Normally never recorded, see the limitation below |
-| `load` | Writing the match to the database | A constraint violation, a missing permission, or a schema change |
+| Stage | What was running | Typical causes | Where it's defined |
+|---|---|---|---|
+| `startup` | Setup before the file is opened | Only if errors with the file | cricsheet-etl-pipeline.py:634, in run_etl: stage = {'name': 'startup'} |
+| `read_source` | Opening and parsing the JSON | Missing file, invalid JSON |  cricsheet-etl-pipeline.py:140, before load_json() |
+| `transform` | Building rows from the JSON | A file whose structure isn't Cricsheet's | cricsheet-etl-pipeline.py:143, before the rows are built from the JSON |
+| `connect` | Opening the database connection | Normally never recorded, see the limitation below | cricsheet-etl-pipeline.py:455, before mysql.connector.connect() |
+| `load` | Writing the match to the database | A constraint violation, a missing permission, or a schema change | cricsheet-etl-pipeline.py:462, before the inserts |
 
 ### Limitation: database outages aren't recorded
 
