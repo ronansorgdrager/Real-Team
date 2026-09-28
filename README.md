@@ -74,6 +74,82 @@ If a sync fails, check `etl.log` in the repo root, or the `ETL_ERROR_LOG` table.
 4. To run the ETL on files you already have: `python cricsheet_scraper.py -f cricsheet_data`. It skips any file already marked SUCCESS in `IMPORT_LOG`.
 5. Read the summary at the end. If any files failed, look in `etl.log` or `ETL_ERROR_LOG` to see why.
 
+## Import logs
+
+The ETL records every run in two database tables. `IMPORT_LOG` gets one row for each run, whether it passed or failed. `ETL_ERROR_LOG` gets one row for each failed run, with the details of what went wrong.
+
+### IMPORT_LOG
+
+| Column | What it holds |
+|---|---|
+| `log_id` | Row ID. `ETL_ERROR_LOG.log_id` points back to it. |
+| `import_timestamp` | When the row was written, in the MySQL server's time. |
+| `source_url` | The bare filename of the imported file, such as `1082591.json`. Despite its name, it never holds a URL. |
+| `status` | `SUCCESS` or `FAILED`. |
+| `is_duplicate` | `1` if the match was already in the database and this run replaced it. Always `0` on a `FAILED` row. |
+| `notes` | Set only on duplicates. It names the match and teams, says when the file was last imported, and gives how many performance rows were replaced. |
+
+How rows get written:
+
+- **Success:** the `SUCCESS` row is inserted in the same transaction as the match data. It is committed with the match, or rolled back with it, so a `SUCCESS` row always means the match data is in the database.
+- **Failure:** the transaction is rolled back, then a `FAILED` row is written on a separate connection.
+- **Re-runs:** a file that has been imported more than once has more than one row, so a file that failed and later succeeded has a `FAILED` row followed by a `SUCCESS` row. The latest row is the current state.
+
+What reads it:
+
+- The scraper skips any file that has a `SUCCESS` row for its filename. To make it re-import a file, pass it to the ETL directly: `python cricsheet-etl-pipeline.py <file>`.
+- The Sync button reports its imported and failed counts from the rows written since the sync started.
+
+### ETL_ERROR_LOG
+
+| Column | What it holds |
+|---|---|
+| `error_id` | Row ID. |
+| `occurred_at` | When the failure was recorded. |
+| `log_id` | The `FAILED` row in `IMPORT_LOG` for the same run. It has no foreign key, because the `etl` user isn't granted `REFERENCES`. |
+| `source_file` | The bare filename, the same value as `IMPORT_LOG.source_url`. |
+| `stage` | The part of the pipeline that was running when the error happened. See below. |
+| `error_type` | The Python exception class, such as `FileNotFoundError` or `IntegrityError`. |
+| `error_message` | The exception message. |
+| `traceback` | The full Python traceback. `etl.log` doesn't include it, so this column is the only place to find it. |
+
+`stage` is one of:
+
+| Stage | What was running | Typical causes |
+|---|---|---|
+| `startup` | Setup before the file is opened | Only if errors with the file |
+| `read_source` | Opening and parsing the JSON | Missing file, invalid JSON |
+| `transform` | Building rows from the JSON | A file whose structure isn't Cricsheet's |
+| `connect` | Opening the database connection | Normally never recorded, see the limitation below |
+| `load` | Writing the match to the database | A constraint violation, a missing permission, or a schema change |
+
+### Limitation: database outages aren't recorded
+
+Both failure rows are written to the same database the import uses. If MySQL is down or refuses the `etl` login, no rows are written, and the failure only appears in `etl.log` as "Could not write the failure to the database". When a sync fails but neither table has a row for it, check `etl.log`.
+
+### Useful queries
+
+```sql
+-- The most recent failures, with their errors
+SELECT i.import_timestamp, e.source_file, e.stage, e.error_type, e.error_message
+FROM ETL_ERROR_LOG e
+LEFT JOIN IMPORT_LOG i ON i.log_id = e.log_id
+ORDER BY e.occurred_at DESC
+LIMIT 20;
+
+-- Files whose latest run failed, and are still not imported
+SELECT l.source_url, l.import_timestamp
+FROM IMPORT_LOG l
+WHERE l.log_id = (SELECT MAX(log_id) FROM IMPORT_LOG WHERE source_url = l.source_url)
+  AND l.status = 'FAILED';
+
+-- Re-imports that replaced an existing match
+SELECT import_timestamp, source_url, notes
+FROM IMPORT_LOG
+WHERE is_duplicate = 1
+ORDER BY import_timestamp DESC;
+```
+
 ## How IDs work
 
 Each record's ID is a fingerprint calculated from the details that describe it, so the same thing always gets the same ID and we never store it twice.
