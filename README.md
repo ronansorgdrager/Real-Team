@@ -21,6 +21,8 @@ pip install -r requirements.txt
 
 The folder has to be called `venv` and sit in the repo root, because the Sync button in the web app looks for `venv\Scripts\python.exe` (see "How the Sync button works" below).
 
+The venv is git-ignored, so cloning the repo doesn't give you one. Everyone has to create their own with the commands above. If you skip this step, the Sync button won't warn you. It quietly falls back to the system Python, which doesn't have the packages, and the sync fails.
+
 ### 3. Set up the database
 
 1. Run `cricket-stats-schema.sql`. It creates the `cricket_explorer` database and its tables.
