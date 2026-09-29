@@ -483,3 +483,103 @@ GROUP BY pl.player_id, pl.player_name
 HAVING balls_bowled >= ?
 ORDER BY economy ASC
 LIMIT 10;
+
+
+-- part I - match scorecard (innings breakdown)
+-- Params: 1 match_id (required) for every query in this part.
+-- Innings are ordered by innings_number. Batters are ordered by batting
+-- position. Bowling order isn't stored, so bowlers are ordered by most overs.
+
+-- I1. Innings summary: one row per innings -----------------------------------
+-- Overs are built from legal_balls, so wides and no-balls are left out.
+SELECT
+    i.innings_number,
+    bat.team_name                                                    AS batting_team,
+    bowl.team_name                                                   AS bowling_team,
+    CONCAT(i.total_runs, '/', i.total_wickets)                       AS score,
+    CONCAT(FLOOR(i.legal_balls / 6), '.', MOD(i.legal_balls, 6))     AS overs,
+    ROUND(6 * i.total_runs / NULLIF(i.legal_balls, 0), 2)            AS run_rate,
+    i.extras_byes + i.extras_legbyes + i.extras_wides
+        + i.extras_noballs + i.extras_penalty                        AS extras,
+    CONCAT('b ', i.extras_byes, ', lb ', i.extras_legbyes, ', w ', i.extras_wides,
+           ', nb ', i.extras_noballs, ', p ', i.extras_penalty)      AS extras_detail
+FROM INNINGS i
+JOIN TEAMS bat  ON bat.team_id  = i.batting_team_id
+JOIN TEAMS bowl ON bowl.team_id = i.bowling_team_id
+WHERE i.match_id = ?
+ORDER BY i.innings_number;
+
+
+-- I2. Batting card: one row per batter per innings ---------------------------
+-- The dismissal column reads the way a printed scorecard does:
+-- "c Smith b Jones", "c & b Jones", "st Smith b Jones", "run out (Smith)".
+SELECT
+    i.innings_number,
+    p.batting_position,
+    pl.player_name                                                   AS batter,
+    CASE
+        WHEN p.dismissal_kind IS NULL THEN 'not out'
+        WHEN p.dismissal_kind = 'caught' AND p.dismissal_fielder_id = p.dismissal_bowler_id
+            THEN CONCAT('c & b ', bw.player_name)
+        WHEN p.dismissal_kind = 'caught'   THEN CONCAT('c ', COALESCE(fd.player_name, 'sub'), ' b ', bw.player_name)
+        WHEN p.dismissal_kind = 'bowled'   THEN CONCAT('b ', bw.player_name)
+        WHEN p.dismissal_kind = 'lbw'      THEN CONCAT('lbw b ', bw.player_name)
+        WHEN p.dismissal_kind = 'stumped'  THEN CONCAT('st ', fd.player_name, ' b ', bw.player_name)
+        WHEN p.dismissal_kind = 'run out'  THEN CONCAT('run out (', COALESCE(fd.player_name, 'unknown'), ')')
+        WHEN p.dismissal_kind = 'caught and bowled' THEN CONCAT('c & b ', bw.player_name)
+        WHEN bw.player_name IS NOT NULL    THEN CONCAT(p.dismissal_kind, ' b ', bw.player_name)
+        ELSE p.dismissal_kind
+    END                                                              AS dismissal,
+    p.runs_scored                                                    AS runs,
+    p.balls_faced                                                    AS balls,
+    p.fours,
+    p.sixes,
+    ROUND(100 * p.runs_scored / NULLIF(p.balls_faced, 0), 2)         AS strike_rate
+FROM PERFORMANCE p
+JOIN INNINGS i       ON i.innings_id = p.innings_id
+JOIN PLAYERS pl      ON pl.player_id = p.player_id
+LEFT JOIN PLAYERS bw ON bw.player_id = p.dismissal_bowler_id
+LEFT JOIN PLAYERS fd ON fd.player_id = p.dismissal_fielder_id
+WHERE i.match_id = ?
+  AND p.team_id = i.batting_team_id
+  AND p.batting_position IS NOT NULL
+ORDER BY i.innings_number, p.batting_position;
+
+
+-- I3. Bowling card: one row per bowler per innings ---------------------------
+SELECT
+    i.innings_number,
+    pl.player_name                                                   AS bowler,
+    CONCAT(FLOOR(p.balls_bowled / 6), '.', MOD(p.balls_bowled, 6))   AS overs,
+    p.maidens,
+    p.runs_conceded                                                  AS runs,
+    p.wickets_taken                                                  AS wickets,
+    ROUND(6 * p.runs_conceded / NULLIF(p.balls_bowled, 0), 2)        AS economy,
+    p.wides_bowled                                                   AS wides,
+    p.noballs_bowled                                                 AS no_balls
+FROM PERFORMANCE p
+JOIN INNINGS i  ON i.innings_id = p.innings_id
+JOIN PLAYERS pl ON pl.player_id = p.player_id
+WHERE i.match_id = ?
+  AND p.team_id = i.bowling_team_id
+  AND p.balls_bowled > 0
+ORDER BY i.innings_number, p.balls_bowled DESC, p.wickets_taken DESC;
+
+
+-- I4. Fall of wickets ---------------------------------------------------------
+-- Formatted like "1-23 (Smith, 4.2 ov)". The ETL stores over_number and
+-- ball_in_over as completed overs and legal balls, so they display as-is.
+SELECT
+    i.innings_number,
+    f.wicket_number,
+    f.runs_at_fall,
+    pl.player_name                                                   AS player_out,
+    CONCAT(f.over_number, '.', f.ball_in_over)                       AS at_over,
+    CONCAT(f.wicket_number, '-', f.runs_at_fall,
+           ' (', COALESCE(pl.player_name, 'unknown'), ', ',
+           f.over_number, '.', f.ball_in_over, ' ov)')               AS display
+FROM FALL_OF_WICKETS f
+JOIN INNINGS i       ON i.innings_id = f.innings_id
+LEFT JOIN PLAYERS pl ON pl.player_id = f.player_out_id
+WHERE i.match_id = ?
+ORDER BY i.innings_number, f.wicket_number;
