@@ -6,7 +6,6 @@
 -- into NULL and "f.x IS NULL OR ..." then lets every row through.
 -- IDs are the table primary keys (player_id, comp_id, season_id), which the
 -- search endpoint already returns as result.id.
--- Queries still using @variables (A2-A5, B2, D2-D4, G1) have not been converted yet.
 
 -- part A - per-player batting
 
@@ -42,6 +41,7 @@ GROUP BY pl.player_id, pl.player_name;
 
 -- A2. innings-by-innings list
 -- one row per performance, most recent first
+-- Params: 1 player_id
 SELECT
     pl.player_name,
     m.match_date,
@@ -56,12 +56,14 @@ JOIN INNINGS i  ON i.innings_id = p.innings_id
 JOIN MATCHES m  ON m.match_id   = i.match_id
 JOIN TEAMS  opp ON opp.team_id  = i.bowling_team_id
 JOIN PLAYERS pl ON pl.player_id = p.player_id
+CROSS JOIN (SELECT ? AS player_id) f
 WHERE p.team_id = i.batting_team_id
-  AND p.player_id = @player_id
+  AND p.player_id = f.player_id
 ORDER BY m.match_date DESC, i.innings_number;
 
 
 -- A3. Rolling last-10-innings form --------------------------------------------
+-- Params: 1 player_id
 SELECT player_name, match_date, runs_scored, balls_faced,
        ROUND(AVG(runs_scored) OVER w, 1) AS rolling_avg_last10
 FROM (
@@ -70,14 +72,16 @@ FROM (
     JOIN INNINGS i  ON i.innings_id = p.innings_id
     JOIN MATCHES m  ON m.match_id   = i.match_id
     JOIN PLAYERS pl ON pl.player_id = p.player_id
+    CROSS JOIN (SELECT ? AS player_id) f
     WHERE p.team_id = i.batting_team_id
-      AND p.player_id = @player_id
+      AND p.player_id = f.player_id
 ) t
 WINDOW w AS (ORDER BY match_date ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)
 ORDER BY match_date DESC;
 
 
 -- A4. Batting split by who was bowled against
+-- Params: 1 player_id
 SELECT
     opp.team_name AS opposition,
     COUNT(*)               AS innings,
@@ -87,13 +91,15 @@ SELECT
 FROM PERFORMANCE p
 JOIN INNINGS i  ON i.innings_id = p.innings_id
 JOIN TEAMS  opp ON opp.team_id  = i.bowling_team_id
+CROSS JOIN (SELECT ? AS player_id) f
 WHERE p.team_id = i.batting_team_id
-  AND p.player_id = @player_id
+  AND p.player_id = f.player_id
 GROUP BY opp.team_id, opp.team_name
 ORDER BY runs DESC;
 
 
 -- A5. Batting split by SEASON / YEAR ------------------------------------------
+-- Params: 1 player_id
 SELECT
     s.season_name,
     COUNT(*)           AS innings,
@@ -103,8 +109,9 @@ FROM PERFORMANCE p
 JOIN INNINGS i  ON i.innings_id = p.innings_id
 JOIN MATCHES m  ON m.match_id   = i.match_id
 JOIN SEASONS s  ON s.season_id  = m.season_id
+CROSS JOIN (SELECT ? AS player_id) f
 WHERE p.team_id = i.batting_team_id
-  AND p.player_id = @player_id
+  AND p.player_id = f.player_id
 GROUP BY s.season_id, s.season_name
 ORDER BY s.season_name;
 
@@ -143,6 +150,7 @@ GROUP BY pl.player_id, pl.player_name;
 
 -- B2. Bowling split by opposition
 -- Uses the stored balls_bowled, like B1, instead of converting overs_bowled back to balls.
+-- Params: 1 player_id
 SELECT
     opp.team_name AS opposition,
     COUNT(*)             AS innings_bowled,
@@ -151,9 +159,10 @@ SELECT
 FROM PERFORMANCE p
 JOIN INNINGS i  ON i.innings_id = p.innings_id
 JOIN TEAMS  opp ON opp.team_id  = i.batting_team_id   -- for a bowler, opposition = the batting team
+CROSS JOIN (SELECT ? AS player_id) f
 WHERE p.team_id = i.bowling_team_id
   AND p.balls_bowled > 0
-  AND p.player_id = @player_id
+  AND p.player_id = f.player_id
 GROUP BY opp.team_id, opp.team_name
 ORDER BY wickets DESC;
 
@@ -202,6 +211,7 @@ ORDER BY win_pct DESC;
 
 
 -- D2. Head-to-head between two teams
+-- Params: 1 team_a_id, 2 team_b_id
 SELECT
     a.team_name AS team_a,
     b.team_name AS team_b,
@@ -210,14 +220,16 @@ SELECT
     SUM(m.winning_team_id = b.team_id)       AS team_b_wins,
     SUM(m.winning_team_id IS NULL)           AS no_result_or_tie
 FROM MATCHES m
-JOIN TEAMS a ON a.team_id = @team_a_id
-JOIN TEAMS b ON b.team_id = @team_b_id
+CROSS JOIN (SELECT ? AS team_a_id, ? AS team_b_id) f
+JOIN TEAMS a ON a.team_id = f.team_a_id
+JOIN TEAMS b ON b.team_id = f.team_b_id
 WHERE (m.team1_id = a.team_id AND m.team2_id = b.team_id)
    OR (m.team1_id = b.team_id AND m.team2_id = a.team_id)
 GROUP BY a.team_name, b.team_name;
 
 
 -- D3. Results by season and format
+-- Params: 1 team_id
 SELECT
     t.team_name, s.season_name, m.match_type,
     COUNT(*)                            AS played,
@@ -225,22 +237,25 @@ SELECT
 FROM MATCHES m
 JOIN SEASONS s ON s.season_id = m.season_id
 JOIN TEAMS   t ON t.team_id IN (m.team1_id, m.team2_id)
-WHERE t.team_id = @team_id
+CROSS JOIN (SELECT ? AS team_id) f
+WHERE t.team_id = f.team_id
 GROUP BY t.team_name, s.season_name, m.match_type
 ORDER BY s.season_name;
 
 
 -- D4. Current form / streak (last 10 results for a team, newest first)
 -- Gives W/L/NR sequence; read the top run of identical letters as the current streak.
+-- Params: 1 team_id
 SELECT
     m.match_date,
     CASE
-        WHEN m.winning_team_id = @team_id THEN 'W'
+        WHEN m.winning_team_id = f.team_id THEN 'W'
         WHEN m.winning_team_id IS NULL    THEN 'NR/Tie'
         ELSE 'L'
     END AS result
 FROM MATCHES m
-WHERE @team_id IN (m.team1_id, m.team2_id)
+CROSS JOIN (SELECT ? AS team_id) f
+WHERE f.team_id IN (m.team1_id, m.team2_id)
 ORDER BY m.match_date DESC
 LIMIT 10;
 
@@ -332,6 +347,7 @@ ORDER BY avg_total DESC;
 -- part g - venue and ground stats
 
 -- G1. A team's record at each ground
+-- Params: 1 team_id
 SELECT
     t.team_name, m.venue,
     COUNT(*)                            AS played,
@@ -339,7 +355,8 @@ SELECT
     ROUND(100 * SUM(m.winning_team_id = t.team_id) / COUNT(*), 1) AS win_pct
 FROM MATCHES m
 JOIN TEAMS t ON t.team_id IN (m.team1_id, m.team2_id)
-WHERE t.team_id = @team_id
+CROSS JOIN (SELECT ? AS team_id) f
+WHERE t.team_id = f.team_id
 GROUP BY t.team_name, m.venue
 ORDER BY played DESC;
 
